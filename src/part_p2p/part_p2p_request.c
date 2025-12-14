@@ -1,0 +1,97 @@
+
+#include "ompi/mca/part/part.h"
+#include "ompi/mca/part/base/part_base_psendreq.h"
+#include "ompi/mca/part/base/part_base_precvreq.h"
+
+#include "part_p2p_request.h"
+#include "part_p2p.h"
+
+
+mca_part_p2p_request_t* mca_part_p2p_request_alloc_send()
+{
+    mca_part_p2p_request_t* req = (mca_part_p2p_request_t*) opal_free_list_get(&mca_part_base_psend_requests);
+    req->type = MCA_PART_P2P_REQUEST_SEND;
+    return req;
+}
+
+
+mca_part_p2p_request_t* mca_part_p2p_request_alloc_recv()
+{
+    mca_part_p2p_request_t* req = (mca_part_p2p_request_t*) opal_free_list_get(&mca_part_base_precv_requests);
+    req->type = MCA_PART_P2P_REQUEST_RECV;
+    return req;
+}
+
+
+void mca_part_p2p_request_init(
+    mca_part_p2p_request_t* request,
+    const void* buf, size_t parts, size_t count,
+    ompi_datatype_t* datatype, int target, int tag,
+    ompi_communicator_t* comm)
+{
+    OMPI_REQUEST_INIT(&request->super, true);
+    OBJ_RETAIN(comm);
+    OMPI_DATATYPE_RETAIN(datatype);
+
+    ompi_request_t* req_ompi = &request->super;
+
+    req_ompi->req_mpi_object.comm = comm;
+    req_ompi->req_start = ompi_part_p2p_module.super.part_start;
+    req_ompi->req_free = mca_part_p2p_free;
+    req_ompi->req_cancel = NULL;
+    req_ompi->req_persistent = true;
+
+    if (MCA_PART_P2P_REQUEST_SEND == request->type) {
+        req_ompi->req_status.MPI_SOURCE = comm->c_my_rank;
+        req_ompi->req_status.MPI_TAG = tag;
+    }
+    req_ompi->req_status._ucount = count * parts;
+
+    request->to_delete = false;
+    request->is_initialized = 0;
+    request->user_partition_count = parts;
+    request->partition_size = count;
+    request->datatype = datatype;
+    request->user_data = buf;
+
+    request->init_recv = MPI_REQUEST_NULL;
+    request->init_send = MPI_REQUEST_NULL;
+
+    request->partition_requests = NULL;
+    request->partition_states = NULL;
+    request->partition_ready_flags = NULL;
+}
+
+
+void mca_part_p2p_request_free(mca_part_p2p_request_t* request)
+{
+    OMPI_DATATYPE_RELEASE(request->datatype);
+    OBJ_RELEASE(request->super.req_mpi_object.comm);
+    OMPI_REQUEST_FINI(&request->super);
+
+    if (NULL != request->partition_requests) {
+        for (size_t p = 0; p < request->meta.partition_count; p++) {
+            ompi_request_free(&request->partition_requests[p]);
+        }
+        free(request->partition_requests);
+        free(request->partition_states);
+    }
+
+    if (NULL != request->partition_ready_flags) {
+        free((void*) request->partition_ready_flags);
+    }
+
+    if (request->init_send != MPI_REQUEST_NULL) {
+        ompi_request_free(&request->init_send);
+    }
+
+    if (request->init_recv != MPI_REQUEST_NULL) {
+        ompi_request_free(&request->init_recv);
+    }
+
+    if (request->type == MCA_PART_P2P_REQUEST_RECV) {
+        opal_free_list_return(&mca_part_base_precv_requests, (opal_free_list_item_t*) request);
+    } else {
+        opal_free_list_return(&mca_part_base_psend_requests, (opal_free_list_item_t*) request);
+    }
+}
