@@ -1,3 +1,8 @@
+# Custom OpenMPI MCA modules
+
+This my collection of custom OpenMPI MCA modules:
+- a re-implementation of `part`, for partitioned communication, currently *very* broken in OpenMPI 4 to 6
+- more later...
 
 ## Building
 
@@ -62,3 +67,23 @@ Place the new MCA component at the right place for OpenMPI to find:
 ```shell
 cp "<build dir>/src/mca_car_test.so" "~/.openmpi/custom_mca/mca_car_test.so"
 ```
+
+## Testing
+
+Tests are done using [Doctest](https://github.com/doctest/doctest) and its [MPI extension](https://github.com/doctest/doctest/blob/master/doctest/extensions/doctest_mpi.h).
+
+To build tests, pass `-DENABLE_TESTS=ON` when configuring CMake.
+Compile as usual with `cmake --build <build_dir> mca_part_p2p_test`.
+
+To run the test suite:
+```shell
+# Tests should pass with any number of threads (and processes)
+export OMP_NUM_THREADS=2
+mpiexec -np 2 <build_dir>/test/part_p2p/mca_part_p2p_test
+# Or with verbose output from the MCA module:
+mpiexec -np 2 --mca part_base_verbose 100 <build_dir>/test/part_p2p/mca_part_p2p_test
+```
+
+When debugging tests, you can call `wait_for_debugger()` anywhere with the
+environment variable `WAIT_FOR_DEBUGGER` set to `TRUE`.
+You can then attach any debugger and continue the execution as normal.
