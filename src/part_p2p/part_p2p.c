@@ -98,6 +98,7 @@ static int mca_part_p2p_complete_request_init(mca_part_p2p_request_t* request)
                 ompi_part_p2p_module.part_comm, &part_request
             ));
             if (OMPI_SUCCESS != err) { return err; }
+            request->partition_states[p] = MCA_PART_P2P_PARTITION_INACTIVE;
         }
         request->partition_requests[p] = part_request;
     }
@@ -110,7 +111,7 @@ static int mca_part_p2p_complete_request_init(mca_part_p2p_request_t* request)
         /* We handle the edge case where MPI_Start is called before initialization here, but only for receive requests.
          * As send requests mark partitions at any time, this must be handled in the progress loop. */
         bool can_start = OMPI_REQUEST_ACTIVE == request->super.req_state;
-        if (!can_start) {
+        if (can_start) {
             int32_t expected = 1;
             can_start = OPAL_ATOMIC_COMPARE_EXCHANGE_STRONG_32(&request->is_initialized, &expected, 2);
         }
@@ -380,9 +381,9 @@ static int mca_part_p2p_start(size_t count, ompi_request_t** requests)
 
             if (can_start) {
                 for (size_t p = 0; p < req->meta.partition_count; p++) {
-                    int err = req->partition_requests[i]->req_start(1, &req->partition_requests[i]);
+                    int err = req->partition_requests[p]->req_start(1, &req->partition_requests[p]);
                     if (OMPI_SUCCESS != err) { return err; }
-                    req->partition_states[i] = MCA_PART_P2P_PARTITION_STARTED;
+                    req->partition_states[p] = MCA_PART_P2P_PARTITION_STARTED;
                 }
                 opal_output_verbose(50, ompi_part_base_framework.framework_output, "started partitions of request %p", req);
             } else {
