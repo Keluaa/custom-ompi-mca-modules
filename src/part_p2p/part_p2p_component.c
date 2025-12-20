@@ -1,8 +1,11 @@
 
+#include <ompi/communicator/communicator.h>
+
 #include "ompi_config.h"
 #include "ompi/mca/part/base/base.h"
 
 #include "part_p2p.h"
+#include "part_p2p_request.h"
 
 
 static int mca_part_p2p_component_register(void);
@@ -42,7 +45,15 @@ static int mca_part_p2p_component_open(void)
     OBJ_CONSTRUCT(&ompi_part_p2p_module.lock, opal_mutex_t);
     ompi_part_p2p_module.module_in_use = 0;
     ompi_part_p2p_module.next_tag = 0;
-    ompi_part_p2p_module.live_requests = OBJ_NEW(opal_list_t);
+
+    OBJ_CONSTRUCT(&ompi_part_p2p_module.live_requests, opal_list_t);
+    OBJ_CONSTRUCT(&ompi_part_p2p_module.requests, opal_free_list_t);
+    opal_free_list_init(&ompi_part_p2p_module.requests,
+                         sizeof(mca_part_p2p_request_t), opal_cache_line_size, OBJ_CLASS(mca_part_p2p_request_t),
+                         0,opal_cache_line_size,
+                         4, -1, 64,
+                         NULL, 0, NULL, NULL, NULL);
+
     ompi_part_p2p_module.part_comm = MPI_COMM_NULL;
     ompi_part_p2p_module.part_comm_init = MPI_REQUEST_NULL;
 
@@ -61,6 +72,14 @@ static int mca_part_p2p_component_open(void)
 
 static int mca_part_p2p_component_close(void)
 {
+    if (MPI_REQUEST_NULL != ompi_part_p2p_module.part_comm_init) {
+        ompi_request_free(&ompi_part_p2p_module.part_comm_init);
+    }
+    if (MPI_COMM_NULL != ompi_part_p2p_module.part_comm) {
+        ompi_comm_free(&ompi_part_p2p_module.part_comm);
+    }
+    OBJ_DESTRUCT(&ompi_part_p2p_module.live_requests);
+    OBJ_DESTRUCT(&ompi_part_p2p_module.requests);
     OBJ_DESTRUCT(&ompi_part_p2p_module.lock);
     return OMPI_SUCCESS;
 }

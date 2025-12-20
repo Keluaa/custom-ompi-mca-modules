@@ -10,7 +10,7 @@ typedef enum {
     MCA_PART_P2P_REQUEST_SEND,
     MCA_PART_P2P_REQUEST_RECV,
     MCA_PART_P2P_REQUEST_NULL,  // TODO: useful??
-} mca_part_p2p_request_enum_t;
+} mca_part_p2p_request_enum_t;  // TODO: rename
 
 
 typedef enum {
@@ -35,7 +35,6 @@ typedef struct mca_part_p2p_request_meta_t mca_part_p2p_request_meta_t;
 
 
 struct mca_part_p2p_request_t {
-    // TODO: we might need to inherit from part_base_psendreq and part_base_precvreq
     ompi_request_t super;
     mca_part_p2p_request_enum_t type;
     opal_atomic_int32_t to_delete;
@@ -66,15 +65,14 @@ typedef struct mca_part_p2p_request_t mca_part_p2p_request_t;
 OBJ_CLASS_DECLARATION(mca_part_p2p_request_t);
 
 
-mca_part_p2p_request_t* mca_part_p2p_request_alloc_send();
-mca_part_p2p_request_t* mca_part_p2p_request_alloc_recv();
-void mca_part_p2p_request_free(mca_part_p2p_request_t* request);
-
 void mca_part_p2p_request_init(
     mca_part_p2p_request_t* request,
+    mca_part_p2p_request_enum_t type,
     const void* buf, size_t parts, size_t count,
     ompi_datatype_t* datatype, int target, int tag,
     struct ompi_communicator_t* comm);
+
+void mca_part_p2p_request_free(mca_part_p2p_request_t* request);
 
 END_C_DECLS
 

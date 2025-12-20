@@ -79,7 +79,7 @@ MPI_TEST_CASE("MCA Part p2p init", 2) {
         return ompi_part_p2p_module.module_in_use == 2;
     });
     REQUIRE_EQ(ompi_part_p2p_module.module_in_use, 2);
-    CHECK_EQ(ompi_part_p2p_module.live_requests->opal_list_length, 1);
+    CHECK_EQ(ompi_part_p2p_module.live_requests.opal_list_length, 1);
     CHECK_EQ(ompi_part_p2p_module.part_comm_init, MPI_REQUEST_NULL);
     CHECK_NE(ompi_part_p2p_module.part_comm, MPI_COMM_NULL);
 
@@ -91,6 +91,7 @@ MPI_TEST_CASE("MCA Part p2p init", 2) {
     REQUIRE(internal_req->is_initialized);
     CHECK_EQ(internal_req->init_recv, MPI_REQUEST_NULL);
     CHECK_EQ(internal_req->init_send, MPI_REQUEST_NULL);
+    CHECK_EQ(internal_req->super.req_type, OMPI_REQUEST_PART);
     MPI_CHECK(0, internal_req->type == MCA_PART_P2P_REQUEST_SEND);
     MPI_CHECK(1, internal_req->type == MCA_PART_P2P_REQUEST_RECV);
     CHECK_EQ(internal_req->meta.peer_rank, test_rank ^ 1);

@@ -7,24 +7,9 @@
 #include "part_p2p.h"
 
 
-mca_part_p2p_request_t* mca_part_p2p_request_alloc_send()
-{
-    mca_part_p2p_request_t* req = (mca_part_p2p_request_t*) opal_free_list_get(&mca_part_base_psend_requests);
-    req->type = MCA_PART_P2P_REQUEST_SEND;
-    return req;
-}
-
-
-mca_part_p2p_request_t* mca_part_p2p_request_alloc_recv()
-{
-    mca_part_p2p_request_t* req = (mca_part_p2p_request_t*) opal_free_list_get(&mca_part_base_precv_requests);
-    req->type = MCA_PART_P2P_REQUEST_RECV;
-    return req;
-}
-
-
 void mca_part_p2p_request_init(
     mca_part_p2p_request_t* request,
+    mca_part_p2p_request_enum_t type,
     const void* buf, size_t parts, size_t count,
     ompi_datatype_t* datatype, int target, int tag,
     ompi_communicator_t* comm)
@@ -41,12 +26,13 @@ void mca_part_p2p_request_init(
     req_ompi->req_cancel = NULL;
     req_ompi->req_persistent = true;
 
-    if (MCA_PART_P2P_REQUEST_SEND == request->type) {
+    if (MCA_PART_P2P_REQUEST_SEND == type) {
         req_ompi->req_status.MPI_SOURCE = comm->c_my_rank;
         req_ompi->req_status.MPI_TAG = tag;
     }
     req_ompi->req_status._ucount = count * parts;
 
+    request->type = type;
     request->to_delete = false;
     request->is_initialized = 0;
     request->user_partition_count = parts;
@@ -89,9 +75,14 @@ void mca_part_p2p_request_free(mca_part_p2p_request_t* request)
         ompi_request_free(&request->init_recv);
     }
 
-    if (request->type == MCA_PART_P2P_REQUEST_RECV) {
-        opal_free_list_return(&mca_part_base_precv_requests, (opal_free_list_item_t*) request);
-    } else {
-        opal_free_list_return(&mca_part_base_psend_requests, (opal_free_list_item_t*) request);
-    }
+    opal_free_list_return(&ompi_part_p2p_module.requests, (opal_free_list_item_t*) request);
 }
+
+
+static void mca_part_p2p_request_constructor(mca_part_p2p_request_t* request)
+{
+    request->super.req_type = OMPI_REQUEST_PART;
+}
+
+
+OBJ_CLASS_INSTANCE(mca_part_p2p_request_t, ompi_request_t, mca_part_p2p_request_constructor, NULL);

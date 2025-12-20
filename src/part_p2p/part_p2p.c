@@ -14,7 +14,6 @@ static int mca_part_p2p_init_module(void)
 
     opal_output_verbose(50, ompi_part_base_framework.framework_output, "start of part p2p module initialization");
 
-    // TODO: do we need to free this communicator in 'mca_part_p2p_component_close'? (and the request as well?)
     int err = ompi_comm_idup(
         &ompi_mpi_comm_world.comm,
         &ompi_part_p2p_module.part_comm,
@@ -163,7 +162,7 @@ static int mca_part_p2p_progress(void)
     }
 
     mca_part_p2p_request_list_item_t *current, *next;
-    OPAL_LIST_FOREACH_SAFE(current, next, ompi_part_p2p_module.live_requests, mca_part_p2p_request_list_item_t) {
+    OPAL_LIST_FOREACH_SAFE(current, next, &ompi_part_p2p_module.live_requests, mca_part_p2p_request_list_item_t) {
         mca_part_p2p_request_t* req = current->request;
 
         if (0 == req->is_initialized) {
@@ -177,7 +176,7 @@ static int mca_part_p2p_progress(void)
 
         if (true == req->to_delete) {
             mca_part_p2p_request_free(req);
-            opal_list_remove_item(ompi_part_p2p_module.live_requests, (opal_list_item_t*) current);
+            opal_list_remove_item(&ompi_part_p2p_module.live_requests, (opal_list_item_t*) current);
             progress++;
             continue;
         }
@@ -237,18 +236,18 @@ static int mca_part_p2p_psend_init(
     int err = OMPI_SUCCESS;
 
     /* initialize the module if needed */
-    if (0 == ompi_part_p2p_module.module_in_use) {
+    if (OPAL_UNLIKELY(0 == ompi_part_p2p_module.module_in_use)) {
         err = mca_part_p2p_init_module();
         if (OMPI_SUCCESS != err) {
             return err;
         }
     }
 
-    mca_part_p2p_request_t* req = mca_part_p2p_request_alloc_send();
+    mca_part_p2p_request_t* req = (mca_part_p2p_request_t*) opal_free_list_get(&ompi_part_p2p_module.requests);
     if (OPAL_UNLIKELY(NULL == req)) {
         return OMPI_ERR_OUT_OF_RESOURCE;
     }
-    mca_part_p2p_request_init(req, buf, parts, count, datatype, dst, tag, comm);
+    mca_part_p2p_request_init(req, MCA_PART_P2P_REQUEST_SEND, buf, parts, count, datatype, dst, tag, comm);
 
     size_t first_part_tag = opal_atomic_fetch_add_size_t(&ompi_part_p2p_module.next_tag, parts);
     size_t last_part_tag = first_part_tag + count;
@@ -292,7 +291,7 @@ static int mca_part_p2p_psend_init(
     mca_part_p2p_request_list_item_t* item = OBJ_NEW(mca_part_p2p_request_list_item_t);
     item->request = req;
     OPAL_THREAD_LOCK(&ompi_part_p2p_module.lock);
-    opal_list_append(ompi_part_p2p_module.live_requests, (opal_list_item_t*) item);
+    opal_list_append(&ompi_part_p2p_module.live_requests, (opal_list_item_t*) item);
     OPAL_THREAD_UNLOCK(&ompi_part_p2p_module.lock);
 
     opal_output_verbose(50, ompi_part_base_framework.framework_output, "created new psend request %p", req);
@@ -317,11 +316,11 @@ static int mca_part_p2p_precv_init(
         }
     }
 
-    mca_part_p2p_request_t* req = mca_part_p2p_request_alloc_recv();
+    mca_part_p2p_request_t* req = (mca_part_p2p_request_t*) opal_free_list_get(&ompi_part_p2p_module.requests);
     if (OPAL_UNLIKELY(NULL == req)) {
         return OMPI_ERR_OUT_OF_RESOURCE;
     }
-    mca_part_p2p_request_init(req, buf, parts, count, datatype, src, tag, comm);
+    mca_part_p2p_request_init(req, MCA_PART_P2P_REQUEST_RECV, buf, parts, count, datatype, src, tag, comm);
 
     /* Send our global rank to the send side */
     req->tmp_peer_rank = ompi_mpi_comm_world.comm.c_my_rank;
@@ -344,7 +343,7 @@ static int mca_part_p2p_precv_init(
     mca_part_p2p_request_list_item_t* item = OBJ_NEW(mca_part_p2p_request_list_item_t);
     item->request = req;
     OPAL_THREAD_LOCK(&ompi_part_p2p_module.lock);
-    opal_list_append(ompi_part_p2p_module.live_requests, (opal_list_item_t*) item);
+    opal_list_append(&ompi_part_p2p_module.live_requests, (opal_list_item_t*) item);
     OPAL_THREAD_UNLOCK(&ompi_part_p2p_module.lock);
 
     opal_output_verbose(50, ompi_part_base_framework.framework_output, "created new precv request %p", req);
@@ -498,4 +497,21 @@ ompi_part_p2p_module_t ompi_part_p2p_module = {
 };
 
 
-OBJ_CLASS_INSTANCE(mca_part_p2p_request_list_item_t, opal_list_item_t, NULL, NULL);
+static void mca_part_p2p_request_list_item_construct(mca_part_p2p_request_list_item_t* item)
+{
+    item->request = NULL;
+}
+
+
+static void mca_part_p2p_request_list_item_destruct(mca_part_p2p_request_list_item_t* item)
+{
+    item->request = NULL;
+}
+
+
+// OBJ_CLASS_INSTANCE(mca_part_p2p_request_list_item_t, opal_list_item_t, NULL, NULL);
+OBJ_CLASS_INSTANCE(
+    mca_part_p2p_request_list_item_t,
+    opal_list_item_t,
+    mca_part_p2p_request_list_item_construct,
+    mca_part_p2p_request_list_item_destruct);
