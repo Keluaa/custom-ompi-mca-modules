@@ -350,8 +350,15 @@ MPI_TEST_CASE("parallel exchanges", 2) {
         }), "timeout in thread ", thread_id);
         MPI_CHECK_RES(err);
 
-        MPI_CHECK_RES(MPI_Wait(&send_request, MPI_STATUS_IGNORE));
-        MPI_CHECK_RES(MPI_Wait(&recv_request, MPI_STATUS_IGNORE));
+        CHECK_FALSE_MESSAGE(test_until_condition_or_timeout(1, [&] {
+            int done = false;
+            if (err != MPI_SUCCESS) return done;
+            err = MPI_Test(&send_request, &done, MPI_STATUS_IGNORE);
+            if (err != MPI_SUCCESS || !done) return done;
+            err = MPI_Test(&recv_request, &done, MPI_STATUS_IGNORE);
+            return done;
+        }), "timeout while waiting in thread ", thread_id);
+        MPI_CHECK_RES(err);
 
         MPI_CHECK_RES(MPI_Request_free(&send_request));
         MPI_CHECK_RES(MPI_Request_free(&recv_request));
