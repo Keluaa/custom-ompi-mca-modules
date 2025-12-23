@@ -44,23 +44,9 @@ static int mca_part_p2p_complete_request_init(mca_part_p2p_request_t* request)
     int completed = 0;
     int err = OMPI_SUCCESS;
 
-    err = ompi_request_test(&request->init_send, &completed, MPI_STATUS_IGNORE);
+    err = ompi_request_test(&request->init_req, &completed, MPI_STATUS_IGNORE);
     if (OMPI_SUCCESS != err || 0 == completed) {
         return err;
-    }
-
-    MPI_Status status;
-    err = ompi_request_test(&request->init_recv, &completed, &status);
-    if (OMPI_SUCCESS != err || 0 == completed) {
-        return err;
-    }
-
-    if (MCA_PART_P2P_REQUEST_SEND == request->type) {
-        request->meta.peer_rank = request->tmp_peer_rank;
-    } else {
-        /* We now know the exact source and tag, if MPI_ANY_SOURCE or MPI_ANY_TAG were passed */
-        request->super.req_status.MPI_SOURCE = status.MPI_SOURCE;
-        request->super.req_status.MPI_TAG = status.MPI_TAG;
     }
 
     /* Now 'request->meta' is synchronized between both processes */
@@ -86,14 +72,14 @@ static int mca_part_p2p_complete_request_init(mca_part_p2p_request_t* request)
         if (MCA_PART_P2P_REQUEST_SEND == request->type) {
             err = MCA_PML_CALL(isend_init(
                 partition_data, request->partition_size, request->datatype,
-                request->meta.peer_rank, request->meta.first_part_tag + p, MCA_PML_BASE_SEND_STANDARD,
+                request->peer_rank, request->meta.first_part_tag + p, MCA_PML_BASE_SEND_STANDARD,
                 ompi_part_p2p_module.part_comm, &part_request
             ));
             if (OMPI_SUCCESS != err) { return err; }
         } else {
             err = MCA_PML_CALL(irecv_init(
                 partition_data, request->partition_size, request->datatype,
-                request->meta.peer_rank, request->meta.first_part_tag + p,
+                request->peer_rank, request->meta.first_part_tag + p,
                 ompi_part_p2p_module.part_comm, &part_request
             ));
             if (OMPI_SUCCESS != err) { return err; }
@@ -102,7 +88,7 @@ static int mca_part_p2p_complete_request_init(mca_part_p2p_request_t* request)
         request->partition_requests[p] = part_request;
     }
 
-    opal_output_verbose(50, ompi_part_base_framework.framework_output, "initialized request %p with rank %d", request, request->meta.peer_rank);
+    opal_output_verbose(50, ompi_part_base_framework.framework_output, "initialized request %p with rank %d", request, request->peer_rank);
 
     request->is_initialized = 1;
 
@@ -227,6 +213,21 @@ exit_progress:
 }
 
 
+static int mca_part_p2p_lookup_peer_rank_in_world(ompi_communicator_t* comm, int peer_rank, int* world_rank)
+{
+    if (MPI_COMM_WORLD == comm) {
+        *world_rank = peer_rank;
+        return OMPI_SUCCESS;
+    }
+
+    // TODO: is this the most efficient way of obtaining the MPI_COMM_WORLD from a rank ?
+    int err = ompi_group_translate_ranks(comm->c_local_group, 1, &peer_rank, ompi_mpi_comm_world.comm.c_local_group, world_rank);
+    if (OMPI_SUCCESS != err) { return err; }
+    if (MPI_UNDEFINED == *world_rank || MPI_PROC_NULL == *world_rank) { return MPI_ERR_RANK; }
+    return OMPI_SUCCESS;
+}
+
+
 static int mca_part_p2p_psend_init(
     const void* buf, size_t parts, size_t count,
     ompi_datatype_t* datatype, int dst, int tag,
@@ -256,23 +257,21 @@ static int mca_part_p2p_psend_init(
         return OMPI_ERR_BAD_PARAM;
     }
 
-    // TODO: the MPI spec requires that a MPI_Psend_init can only be matched with a MPI_Precv_init
+    /* Partitions are transmitted in a duplicate of MPI_COMM_WORLD, not in the 'comm'
+     * given by the user, allowing to use different tags for each request of a partition.
+     * Before moving to this duplicate comm, we must know which rank 'dst' corresponds to. */
+    err = mca_part_p2p_lookup_peer_rank_in_world(comm, dst, &req->peer_rank);
+    if (OMPI_SUCCESS != err) { return err; }
+
+    // TODO: the MPI spec requires that a MPI_Psend_init can only be matched with a MPI_Precv_init,
+    //  and this is a clear violation of this requirement.
     /* It is the send side which dictates the number of partitions requests and their tags. */
-    req->meta.peer_rank = ompi_mpi_comm_world.comm.c_my_rank;
     req->meta.first_part_tag = (int) first_part_tag;
     req->meta.partition_count = parts;
     err = MCA_PML_CALL(isend(
         &req->meta, sizeof(mca_part_p2p_request_meta_t), MPI_BYTE,
         dst, tag, MCA_PML_BASE_SEND_STANDARD, comm,
-        &req->init_send
-    ));
-    if (OMPI_SUCCESS != err) { return err; }
-
-    /* We are only interested in the receiving process' rank */
-    err = MCA_PML_CALL(irecv(
-        &req->tmp_peer_rank, 1, MPI_INT,
-        dst, tag, comm,
-        &req->init_recv
+        &req->init_req
     ));
     if (OMPI_SUCCESS != err) { return err; }
 
@@ -308,6 +307,11 @@ static int mca_part_p2p_precv_init(
 {
     int err = OMPI_SUCCESS;
 
+    if (MPI_ANY_TAG == tag || MPI_ANY_SOURCE == src) {
+        /* Disallowed by the MPI spec (implicitly) */
+        return OMPI_ERR_BAD_PARAM;
+    }
+
     /* initialize the module if needed */
     if (0 == ompi_part_p2p_module.module_in_use) {
         err = mca_part_p2p_init_module();
@@ -322,20 +326,14 @@ static int mca_part_p2p_precv_init(
     }
     mca_part_p2p_request_init(req, MCA_PART_P2P_REQUEST_RECV, buf, parts, count, datatype, src, tag, comm);
 
-    /* Send our global rank to the send side */
-    req->tmp_peer_rank = ompi_mpi_comm_world.comm.c_my_rank;
-    err = MCA_PML_CALL(isend(
-        &req->tmp_peer_rank, 1, MPI_INT,
-        src, tag, MCA_PML_BASE_SEND_STANDARD, comm,
-        &req->init_send
-    ));
+    err = mca_part_p2p_lookup_peer_rank_in_world(comm, src, &req->peer_rank);
     if (OMPI_SUCCESS != err) { return err; }
 
     /* Receive the partitions configuration */
     err = MCA_PML_CALL(irecv(
         &req->meta, sizeof(mca_part_p2p_request_meta_t), MPI_BYTE,
         src, tag, comm,
-        &req->init_recv
+        &req->init_req
     ));
     if (OMPI_SUCCESS != err) { return err; }
 

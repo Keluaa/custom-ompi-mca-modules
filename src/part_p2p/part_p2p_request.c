@@ -26,22 +26,20 @@ void mca_part_p2p_request_init(
     req_ompi->req_cancel = NULL;
     req_ompi->req_persistent = true;
 
-    if (MCA_PART_P2P_REQUEST_SEND == type) {
-        req_ompi->req_status.MPI_SOURCE = comm->c_my_rank;
-        req_ompi->req_status.MPI_TAG = tag;
-    }
+    req_ompi->req_status.MPI_SOURCE = MCA_PART_P2P_REQUEST_SEND == type ? comm->c_my_rank : target;
+    req_ompi->req_status.MPI_TAG = tag;
     req_ompi->req_status._ucount = count * parts;
 
     request->type = type;
     request->to_delete = false;
+    request->peer_rank = MPI_PROC_NULL;
     request->is_initialized = 0;
     request->user_partition_count = parts;
     request->partition_size = count;
     request->datatype = datatype;
     request->user_data = buf;
 
-    request->init_recv = MPI_REQUEST_NULL;
-    request->init_send = MPI_REQUEST_NULL;
+    request->init_req = MPI_REQUEST_NULL;
 
     request->partition_requests = NULL;
     request->partition_states = NULL;
@@ -67,12 +65,8 @@ void mca_part_p2p_request_free(mca_part_p2p_request_t* request)
         free((void*) request->partition_ready_flags);
     }
 
-    if (request->init_send != MPI_REQUEST_NULL) {
-        ompi_request_free(&request->init_send);
-    }
-
-    if (request->init_recv != MPI_REQUEST_NULL) {
-        ompi_request_free(&request->init_recv);
+    if (request->init_req != MPI_REQUEST_NULL) {
+        ompi_request_free(&request->init_req);
     }
 
     opal_free_list_return(&ompi_part_p2p_module.requests, (opal_free_list_item_t*) request);

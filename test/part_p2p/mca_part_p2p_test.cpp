@@ -89,12 +89,11 @@ MPI_TEST_CASE("MCA Part p2p init", 2) {
         return internal_req->is_initialized;
     });
     REQUIRE(internal_req->is_initialized);
-    CHECK_EQ(internal_req->init_recv, MPI_REQUEST_NULL);
-    CHECK_EQ(internal_req->init_send, MPI_REQUEST_NULL);
+    CHECK_EQ(internal_req->init_req, MPI_REQUEST_NULL);
     CHECK_EQ(internal_req->super.req_type, OMPI_REQUEST_PART);
     MPI_CHECK(0, internal_req->type == MCA_PART_P2P_REQUEST_SEND);
     MPI_CHECK(1, internal_req->type == MCA_PART_P2P_REQUEST_RECV);
-    CHECK_EQ(internal_req->meta.peer_rank, test_rank ^ 1);
+    CHECK_EQ(internal_req->peer_rank, test_rank ^ 1);
     CHECK_EQ(internal_req->meta.first_part_tag, 0);
     CHECK_EQ(internal_req->meta.partition_count, 1);
     CHECK_EQ(internal_req->to_delete, 0);
@@ -155,6 +154,37 @@ MPI_TEST_CASE("Basic send/recv", 2) {
     }
 
     MPI_CHECK_RES(MPI_Request_free(&request));
+}
+
+
+MPI_TEST_CASE("different comm", 2) {
+    // Build a simple communicator where ranks don't exactly match with those in MPI_COMM_WORLD
+    MPI_Comm zoink_comm;
+    MPI_CHECK_RES(MPI_Comm_split(test_comm, 0, test_rank ^ 1, &zoink_comm));
+
+    int zoink_rank, world_rank;
+    MPI_CHECK_RES(MPI_Comm_rank(zoink_comm, &zoink_rank));
+    MPI_CHECK_RES(MPI_Comm_rank(MPI_COMM_WORLD, &world_rank));
+    MPI_CHECK(0, (zoink_rank == 1 && test_rank != zoink_rank));
+    MPI_CHECK(1, (zoink_rank == 0 && test_rank != zoink_rank));
+
+    constexpr size_t N = 1000;
+    constexpr size_t P = 5;
+    std::vector<int> buffer(N*P, 0);
+
+    MPI_Request request;
+    if (zoink_rank == 0) {
+        MPI_CHECK_RES(MPI_Psend_init(buffer.data(), P, N, MPI_INT, 1, 0, zoink_comm, MPI_INFO_NULL, &request));
+    } else {
+        MPI_CHECK_RES(MPI_Precv_init(buffer.data(), P, N, MPI_INT, 0, 0, zoink_comm, MPI_INFO_NULL, &request));
+    }
+
+    // Immediately after MPI_P****_init, we know exactly to which rank we are talking to in MPI_COMM_WORLD
+    mca_part_p2p_request_t* internal_req = reinterpret_cast<mca_part_p2p_request_t*>(request);
+    CHECK_EQ(internal_req->peer_rank, world_rank ^ 1);
+
+    MPI_CHECK_RES(MPI_Request_free(&request));
+    MPI_CHECK_RES(MPI_Comm_free(&zoink_comm));
 }
 
 

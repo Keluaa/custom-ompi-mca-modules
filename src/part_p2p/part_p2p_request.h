@@ -23,8 +23,6 @@ typedef enum {
 
 
 struct mca_part_p2p_request_meta_t {
-    /** Rank of the other process in 'MPI_COMM_WORLD'. */
-    int peer_rank;
     /** Tag for the request of the first partition.
      *  The others use 'first_part_tag + part_idx' */
     int first_part_tag;
@@ -38,6 +36,11 @@ struct mca_part_p2p_request_t {
     ompi_request_t super;
     mca_part_p2p_request_enum_t type;
     opal_atomic_int32_t to_delete;
+
+    /** Rank of peer in MPI_COMM_WORLD.
+     *  Partitions live in a communicator duplicating MPI_COMM_WORLD, instead of the communicator used to initiate
+     *  the partitioned request, since we need to generate unique tags for each partition. */
+    int peer_rank;
 
     /** Information shared by both processes after initialization */
     mca_part_p2p_request_meta_t meta;
@@ -55,11 +58,9 @@ struct mca_part_p2p_request_t {
     const void* user_data;        /**< Contiguous user buffer for the partitions */
 
     /* Data required for initialization */
-    opal_atomic_int32_t is_initialized;
-    opal_atomic_int32_t has_started;   /**< If 'MPI_Start' was called. Useful only for the receiving side, which doesn't know yet the number of requests. */
-    int tmp_peer_rank;
-    ompi_request_t* init_send;
-    ompi_request_t* init_recv;
+    opal_atomic_int32_t is_initialized;  /**< '1' if 'init_req' was completed, '2' (only for recv) if all partitioned requests have been started for the first time */
+    opal_atomic_int32_t has_started;     /**< If 'MPI_Start' was called. Useful only for the receiving side, which doesn't know yet the number of requests. */
+    ompi_request_t*     init_req;        /**< used to send 'meta' from MPI_Psend_init to MPI_Precv_init */
 };
 typedef struct mca_part_p2p_request_t mca_part_p2p_request_t;
 OBJ_CLASS_DECLARATION(mca_part_p2p_request_t);
