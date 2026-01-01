@@ -251,7 +251,7 @@ static int mca_part_p2p_psend_init(
     mca_part_p2p_request_init(req, MCA_PART_P2P_REQUEST_SEND, buf, parts, count, datatype, dst, tag, comm);
 
     size_t first_part_tag = opal_atomic_fetch_add_size_t(&ompi_part_p2p_module.next_tag, parts);
-    size_t last_part_tag = first_part_tag + count;
+    size_t last_part_tag = first_part_tag + parts;
     if (first_part_tag > INT_MAX || last_part_tag > INT_MAX) {
         /* int overflow: too many partitions */
         return OMPI_ERR_BAD_PARAM;
@@ -370,6 +370,11 @@ static int mca_part_p2p_start(size_t count, ompi_request_t** requests)
             break;
         }
         case MCA_PART_P2P_REQUEST_RECV: {
+            /* To ensure proper synchronization with the request's initialization (which may start requests as well),
+             * we must first mark the request as active, then test if it is initialized. */
+            req->super.req_complete = REQUEST_PENDING;
+            req->super.req_state = OMPI_REQUEST_ACTIVE;
+
             bool can_start = req->is_initialized == 2;
             if (!can_start) {
                 int32_t expected = 1;
@@ -387,9 +392,6 @@ static int mca_part_p2p_start(size_t count, ompi_request_t** requests)
                 /* We don't know the number of partition requests yet, so 'req->partition_ready_flags' cannot be used.
                  * Instead, the requests will be started immediately after initialization. */
             }
-
-            req->super.req_complete = REQUEST_PENDING;
-            req->super.req_state = OMPI_REQUEST_ACTIVE;
             break;
         }
         default:
@@ -438,13 +440,13 @@ static int mca_part_p2p_parrived(size_t min_part, size_t max_part, int* flag, om
         err = OMPI_ERR_BAD_PARAM;
     } else if (OMPI_REQUEST_INACTIVE == req->super.req_state) {
         has_arrived = true;
-    } else if (NULL == req->partition_states) {  /* cheaper than '!req->is_initialized' */
+    } else if (2 != req->is_initialized) {
         has_arrived = false;
     } else {
         size_t min_send_part = min_part;
         size_t max_send_part = max_part;
         if (req->user_partition_count != req->meta.partition_count) {
-            /* Match the receive partitions with the source */
+            /* Match the user partitions with the internal ones */
             size_t first_elem = min_part * req->partition_size;
             size_t last_elem  = (max_part + 1) * req->partition_size - 1;
             size_t source_partition_size = req->user_partition_count * req->partition_size / req->meta.partition_count;
