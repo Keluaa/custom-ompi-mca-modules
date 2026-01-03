@@ -1,54 +1,8 @@
 #include <vector>
 #include <string_view>
-#include <doctest/extensions/doctest_mpi.h>
 #include <omp.h>
 
-#include "../wait_for_debugger.h"
-
-#include "part_p2p.h"
-#include "opal/runtime/opal_progress.h"
-#include "ompi/mca/part/base/base.h"
-
-#if OMPI_VERSION_MAJOR < 6
-END_C_DECLS  // needed due to a duplicate BEGIN_C_DECLS in "opal/util/event.h"
-#endif
-
-
-#define MPI_CHECK_RES(expr)              \
-    do {                                 \
-        int res_mpi = (expr);            \
-        REQUIRE(res_mpi == MPI_SUCCESS); \
-    } while (false)
-
-#define MPI_CHECK_RES_MESSAGE(expr, ...)                         \
-    do {                                                         \
-        int res_mpi = (expr);                                    \
-        REQUIRE_MESSAGE(res_mpi == MPI_SUCCESS, ## __VA_ARGS__); \
-    } while (false)
-
-
-template<typename Functor>
-bool test_until_condition_or_timeout(int seconds, Functor&& f)
-{
-    auto start_time = clock();
-    auto current_time = start_time;
-    while (current_time - start_time < seconds * CLOCKS_PER_SEC) {
-        if (f()) return false;
-        current_time = clock();
-    }
-    return true;  // timeout
-}
-
-
-template<typename Functor>
-bool progress_until_condition_or_timeout(int seconds, Functor&& f)
-{
-    if (f()) return false;
-    return test_until_condition_or_timeout(seconds, [&] {
-        opal_progress();
-        return f();
-    });
-}
+#include "../open_mpi_doctest_utils.h"
 
 
 MPI_TEST_CASE("MCA Part p2p loaded", 1) {
@@ -136,7 +90,6 @@ MPI_TEST_CASE("Basic send/recv", 2) {
     if (test_rank == 0) {
         CHECK_EQ(MPI_Parrived(request, 0, &flag), MPI_ERR_REQUEST);
         CHECK_EQ(MPI_Pready(P, request), MPI_ERR_ARG);
-
         for (int p = 0; p < P; ++p) {
             MPI_CHECK_RES(MPI_Pready(p, request));
         }
@@ -144,7 +97,6 @@ MPI_TEST_CASE("Basic send/recv", 2) {
     } else {
         CHECK_EQ(MPI_Pready(0, request), MPI_ERR_REQUEST);
         CHECK_EQ(MPI_Parrived(request, P, &flag), MPI_ERR_ARG);
-
         MPI_CHECK_RES(MPI_Wait(&request, MPI_STATUS_IGNORE));
         for (int i = 0; i < N; i++) {
             if (buffer[i] != i) {
@@ -180,7 +132,7 @@ MPI_TEST_CASE("different comm", 2) {
     }
 
     // Immediately after MPI_P****_init, we know exactly to which rank we are talking to in MPI_COMM_WORLD
-    mca_part_p2p_request_t* internal_req = reinterpret_cast<mca_part_p2p_request_t*>(request);
+    auto* internal_req = reinterpret_cast<mca_part_p2p_request_t*>(request);
     CHECK_EQ(internal_req->peer_rank, world_rank ^ 1);
 
     MPI_CHECK_RES(MPI_Request_free(&request));
@@ -217,13 +169,13 @@ MPI_TEST_CASE("exchange", 2) {
     }
 
     // Busy wait for 1 second max for all partitions to arrive
-    CHECK_FALSE_MESSAGE(test_until_condition_or_timeout(1, [&] {
+    test_until_condition_or_abort(1, [&](int* err) {
         int all_arrived = true;
-        for (int p = 0; p < P && all_arrived; ++p) {
-            MPI_CHECK_RES(MPI_Parrived(recv_request, p, &all_arrived));
+        for (int p = 0; p < P && all_arrived && MPI_SUCCESS != *err; ++p) {
+            *err = MPI_Parrived(recv_request, p, &all_arrived);
         }
         return all_arrived;
-    }), "timeout");
+    }, "exchange all arrived", { send_request, recv_request });
 
     MPI_CHECK_RES(MPI_Wait(&send_request, MPI_STATUS_IGNORE));
     MPI_CHECK_RES(MPI_Wait(&recv_request, MPI_STATUS_IGNORE));
@@ -261,15 +213,13 @@ MPI_TEST_CASE("self-exchange", 1) {
     }
 
     // Busy wait for 1 second max for all partitions to arrive
-    int err = MPI_SUCCESS;
-    CHECK_FALSE_MESSAGE(test_until_condition_or_timeout(1, [&] {
+    test_until_condition_or_abort(1, [&](int* err) {
         int all_arrived = true;
-        for (int p = 0; p < P && all_arrived && err == MPI_SUCCESS; ++p) {
-            err = MPI_Parrived(recv_request, p, &all_arrived);
+        for (int p = 0; p < P && all_arrived && MPI_SUCCESS == *err; ++p) {
+            *err = MPI_Parrived(recv_request, p, &all_arrived);
         }
-        return all_arrived || err != MPI_SUCCESS;
-    }), "timeout");
-    MPI_CHECK_RES(err);
+        return all_arrived;
+    }, "self-exchange all arrived", { send_request, recv_request });
 
     MPI_CHECK_RES(MPI_Wait(&send_request, MPI_STATUS_IGNORE));
     MPI_CHECK_RES(MPI_Wait(&recv_request, MPI_STATUS_IGNORE));
@@ -334,7 +284,14 @@ MPI_TEST_CASE("parallel exchanges", 2) {
     MPI_CHECK_RES(MPI_Comm_set_errhandler(MPI_COMM_WORLD, MPI_ERRORS_RETURN));
     MPI_CHECK_RES(MPI_Comm_set_errhandler(test_comm, MPI_ERRORS_RETURN));
 
-    // TODO: unfrequent failure due to a negative refcount, are we freeing requests in a thread-safe region?
+    char label_arrived[200];
+    char label_wait[200];
+    int cycle = 0;
+
+start_cycle:
+    snprintf(label_arrived, 200, "mt-exchange all arrived (%d)", cycle);
+    snprintf(label_wait, 200, "mt-exchange test (%d)", cycle);
+
 #pragma omp parallel
     {
         int thread_id = omp_get_thread_num();
@@ -354,40 +311,48 @@ MPI_TEST_CASE("parallel exchanges", 2) {
         MPI_CHECK_RES(MPI_Psend_init(send_buffer.data(), P, N, MPI_INT, peer, send_tag, test_comm, MPI_INFO_NULL, &send_request));
         MPI_CHECK_RES(MPI_Precv_init(recv_buffer.data(), P, N, MPI_INT, peer, recv_tag, test_comm, MPI_INFO_NULL, &recv_request));
 
-        int v = send_buffer.size() * test_rank;
-        for (int i = 0; i < send_buffer.size(); i++) {
-            send_buffer[i] = i + v;
-        }
-
-        MPI_CHECK_RES(MPI_Start(&send_request));
-        MPI_CHECK_RES(MPI_Start(&recv_request));
-
-        for (int p = 0; p < P; ++p) {
-            MPI_CHECK_RES(MPI_Pready(p, send_request));
-        }
-
-        // Busy wait for 1 second max for all partitions to arrive
-        int err = MPI_SUCCESS;
-        CHECK_FALSE_MESSAGE(test_until_condition_or_timeout(1, [&] {
-            int all_arrived = true;
-            for (int p = 0; p < P && all_arrived && err == MPI_SUCCESS; ++p) {
-                err = MPI_Parrived(recv_request, p, &all_arrived);
+        for (int rep = 1; rep <= 10; ++rep) {
+            int v = send_buffer.size() * send_tag + cycle * rep;
+            for (int i = 0; i < send_buffer.size(); i++) {
+                send_buffer[i] = i + v;
             }
-            return all_arrived;
-        }), "timeout in thread ", thread_id);
-        MPI_CHECK_RES(err);
 
-        CHECK_FALSE_MESSAGE(test_until_condition_or_timeout(1, [&] {
-            int done = false;
-            if (err != MPI_SUCCESS) return done;
-            err = MPI_Test(&send_request, &done, MPI_STATUS_IGNORE);
-            if (err != MPI_SUCCESS || !done) return done;
-            err = MPI_Test(&recv_request, &done, MPI_STATUS_IGNORE);
-            return done;
-        }), "timeout while waiting in thread ", thread_id);
-        MPI_CHECK_RES(err);
+            MPI_CHECK_RES(MPI_Start(&send_request));
+            MPI_CHECK_RES(MPI_Start(&recv_request));
+
+            for (int p = 0; p < P; ++p) {
+                MPI_CHECK_RES(MPI_Pready(p, send_request));
+            }
+
+            // Busy wait for 1 second max for all partitions to arrive
+            test_until_condition_or_abort(1, [&](int* err) {
+                int all_arrived = true;
+                for (int p = 0; p < P && all_arrived && MPI_SUCCESS == *err; ++p) {
+                    *err = MPI_Parrived(recv_request, p, &all_arrived);
+                }
+                return all_arrived;
+            }, label_arrived, { send_request, recv_request });
+
+            test_until_condition_or_abort(1, [&](int* err) {
+                int done = false;
+                *err = MPI_Test(&send_request, &done, MPI_STATUS_IGNORE);
+                if (MPI_SUCCESS != *err || !done) return done;
+                *err = MPI_Test(&recv_request, &done, MPI_STATUS_IGNORE);
+                return done;
+            }, label_wait, { send_request, recv_request });
+
+            bool ok = true;
+            v = recv_buffer.size() * recv_tag + cycle * rep;
+            for (int i = 0; i < recv_buffer.size(); i++) {
+                ok &= recv_buffer[i] == i + v;
+            }
+            CHECK(ok);
+        }
 
         MPI_CHECK_RES(MPI_Request_free(&send_request));
         MPI_CHECK_RES(MPI_Request_free(&recv_request));
     }
+
+    cycle++;
+    if (cycle < 100) goto start_cycle;
 }

@@ -5,6 +5,7 @@ add_executable(mca_part_p2p_test
     ../doctest_main.cpp
     ../wait_for_debugger.h
     mca_part_p2p_test.cpp
+    ../open_mpi_doctest_utils.h
 )
 target_link_directories(mca_part_p2p_test PRIVATE
     ${OMPI_INSTALL_PATH}/lib
@@ -23,3 +24,11 @@ target_include_directories(mca_part_p2p_test PRIVATE
     ${OMPI_INCLUDE_PATHS}
     ../../src/part_p2p
 )
+
+CHECK_CXX_COMPILER_FLAG("-Wno-deprecated-volatile" NO_DEPRECATED_VOLATILE)
+if(NO_DEPRECATED_VOLATILE)
+    # Removes an annoying warning message for Clang & Cie
+    target_compile_options(mca_part_p2p_test PRIVATE
+        -Wno-deprecated-volatile
+    )
+endif()
