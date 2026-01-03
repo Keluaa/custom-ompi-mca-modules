@@ -33,7 +33,7 @@ void mca_part_p2p_request_init(
     request->type = type;
     request->to_delete = false;
     request->peer_rank = MPI_PROC_NULL;
-    request->is_initialized = 0;
+    request->init_state = MCA_PART_P2P_INIT_NONE;
     request->user_partition_count = parts;
     request->partition_size = count;
     request->datatype = datatype;
@@ -43,7 +43,6 @@ void mca_part_p2p_request_init(
 
     request->partition_requests = NULL;
     request->partition_states = NULL;
-    request->partition_ready_flags = NULL;
 }
 
 
@@ -58,11 +57,10 @@ void mca_part_p2p_request_free(mca_part_p2p_request_t* request)
             ompi_request_free(&request->partition_requests[p]);
         }
         free(request->partition_requests);
-        free(request->partition_states);
     }
 
-    if (NULL != request->partition_ready_flags) {
-        free((void*) request->partition_ready_flags);
+    if (NULL != request->partition_states) {
+        free((void*) request->partition_states);
     }
 
     if (request->init_req != MPI_REQUEST_NULL) {

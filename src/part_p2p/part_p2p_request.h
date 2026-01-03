@@ -14,12 +14,19 @@ typedef enum {
 
 
 typedef enum {
-    MCA_PART_P2P_PARTITION_INACTIVE = 0, /**< partition request is not yet started */
-    MCA_PART_P2P_PARTITION_STARTED = 1,  /**< partition request started. The default after initialization, or after MPI_Start for receive requests */
-    MCA_PART_P2P_PARTITION_COMPLETE = 2, /**< partition request complete */
-    // TODO: this might be useless?
-    MCA_PART_P2P_PARTITION_QUEUED = 3,   /**< next progress loop will start the partition request (send only) */
+    MCA_PART_P2P_PARTITION_INACTIVE  = 0,  /**< MPI_Start (or MPI_Pready for send requests) was not called */
+    MCA_PART_P2P_PARTITION_READY     = 1,  /**< send partition marked as ready, but not yet started */
+    MCA_PART_P2P_PARTITION_WAITING   = 2,  /**< recv/send partition started, but not yet completed */
+    MCA_PART_P2P_PARTITION_COMPLETED = 3,  /**< send partition completed, or recv partition has arrived */
 } mca_part_p2p_partition_state_t;
+
+
+typedef enum : int32_t {
+    MCA_PART_P2P_INIT_NONE           = 0b00,
+    MCA_PART_P2P_INIT_HANDSHAKE_FLAG = 0b01,  /**< Partitions and arrays are initialized on both processes */
+    MCA_PART_P2P_INIT_START_FLAG     = 0b10,  /**< MPI_Start was called for the first time */
+    MCA_PART_P2P_INIT_DONE           = MCA_PART_P2P_INIT_HANDSHAKE_FLAG | MCA_PART_P2P_INIT_START_FLAG,
+} mca_part_p2p_init_state_t;
 
 
 struct mca_part_p2p_request_meta_t {
@@ -46,11 +53,8 @@ struct mca_part_p2p_request_t {
     mca_part_p2p_request_meta_t meta;
 
     /* Each of those arrays have 'meta.partition_count' elements */
-    ompi_request_t** partition_requests;               /**< Persistent request for each partition */
-    mca_part_p2p_partition_state_t* partition_states;  /**< State of each partition */
-
-    // TODO: do we have a false sharing issue? this is an array of atomic values, smaller than the cache size...
-    opal_atomic_int32_t* partition_ready_flags;        /**< Readiness flag for partitions. NULL on the receiving side. */
+    ompi_request_t** partition_requests;  /**< Persistent request for each partition */
+    volatile mca_part_p2p_partition_state_t* partition_states;  /**< State of each partition */
 
     size_t user_partition_count;  /**< Exact number of partitions given to MPI_Psend_init or MPI_Precv_init */
     size_t partition_size;        /**< Number of elements per partition */
@@ -58,9 +62,8 @@ struct mca_part_p2p_request_t {
     const void* user_data;        /**< Contiguous user buffer for the partitions */
 
     /* Data required for initialization */
-    opal_atomic_int32_t is_initialized;  /**< '1' if 'init_req' was completed, '2' (only for recv) if all partitioned requests have been started for the first time */
-    opal_atomic_int32_t has_started;     /**< If 'MPI_Start' was called. Useful only for the receiving side, which doesn't know yet the number of requests. */
-    ompi_request_t*     init_req;        /**< used to send 'meta' from MPI_Psend_init to MPI_Precv_init */
+    opal_atomic_int32_t init_state;  /**< A 'mca_part_p2p_init_state_t' value */
+    ompi_request_t*     init_req;    /**< used to send 'meta' from MPI_Psend_init to MPI_Precv_init */
 };
 typedef struct mca_part_p2p_request_t mca_part_p2p_request_t;
 OBJ_CLASS_DECLARATION(mca_part_p2p_request_t);

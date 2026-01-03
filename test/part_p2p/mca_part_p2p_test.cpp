@@ -86,9 +86,9 @@ MPI_TEST_CASE("MCA Part p2p init", 2) {
     // Check if the request is correctly initialized
     auto* internal_req = reinterpret_cast<mca_part_p2p_request_t*>(request);
     progress_until_condition_or_timeout(2, [&] {
-        return internal_req->is_initialized;
+        return MCA_PART_P2P_INIT_HANDSHAKE_FLAG == internal_req->init_state;
     });
-    REQUIRE(internal_req->is_initialized);
+    REQUIRE_EQ(internal_req->init_state, MCA_PART_P2P_INIT_HANDSHAKE_FLAG);
     CHECK_EQ(internal_req->init_req, MPI_REQUEST_NULL);
     CHECK_EQ(internal_req->super.req_type, OMPI_REQUEST_PART);
     MPI_CHECK(0, internal_req->type == MCA_PART_P2P_REQUEST_SEND);

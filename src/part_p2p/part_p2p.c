@@ -53,7 +53,7 @@ static int mca_part_p2p_complete_request_init(mca_part_p2p_request_t* request)
     size_t parts = request->meta.partition_count;
     if (MCA_PART_P2P_REQUEST_RECV == request->type) {
         /* This array is already allocated and initialized on the send side */
-        request->partition_states = malloc(parts * sizeof(mca_part_p2p_partition_state_t));
+        request->partition_states = calloc(parts, sizeof(int));
     }
     request->partition_requests = malloc(parts * sizeof(ompi_request_t*));
     if (NULL == request->partition_states || NULL == request->partition_requests) {
@@ -83,32 +83,21 @@ static int mca_part_p2p_complete_request_init(mca_part_p2p_request_t* request)
                 ompi_part_p2p_module.part_comm, &part_request
             ));
             if (OMPI_SUCCESS != err) { return err; }
-            request->partition_states[p] = MCA_PART_P2P_PARTITION_INACTIVE;
         }
         request->partition_requests[p] = part_request;
     }
 
-    opal_output_verbose(50, ompi_part_base_framework.framework_output, "initialized request %p with rank %d", request, request->peer_rank);
+    opal_output_verbose(50, ompi_part_base_framework.framework_output, "initialized part request %p with rank %d",
+        request, request->peer_rank);
 
-    request->is_initialized = 1;
+    mca_part_p2p_init_state_t init_state = opal_atomic_or_fetch_32(&request->init_state, MCA_PART_P2P_INIT_HANDSHAKE_FLAG);
 
-    if (MCA_PART_P2P_REQUEST_RECV == request->type) {
+    if (MCA_PART_P2P_REQUEST_RECV == request->type && MCA_PART_P2P_INIT_DONE == init_state) {
         /* We handle the edge case where MPI_Start is called before initialization here, but only for receive requests.
          * As send requests mark partitions at any time, this must be handled in the progress loop. */
-        bool can_start = OMPI_REQUEST_ACTIVE == request->super.req_state;
-        if (can_start) {
-            int32_t expected = 1;
-            can_start = OPAL_ATOMIC_COMPARE_EXCHANGE_STRONG_32(&request->is_initialized, &expected, 2);
-        }
-
-        if (can_start) {
-            for (size_t p = 0; p < parts; p++) {
-                ompi_request_t* part_request = request->partition_requests[p];
-                err = part_request->req_start(1, &part_request);
-                if (OMPI_SUCCESS != err) { return err; }
-                request->partition_states[p] = MCA_PART_P2P_PARTITION_STARTED;
-            }
-            opal_output_verbose(50, ompi_part_base_framework.framework_output, "started partitions of request %p after init", request);
+        err = request->partition_requests[0]->req_start(parts, &request->partition_requests[0]);
+        for (size_t p = 0; p < parts && OMPI_SUCCESS == err; p++) {
+            request->partition_states[p] = MCA_PART_P2P_PARTITION_WAITING;
         }
     }
 
@@ -118,7 +107,7 @@ static int mca_part_p2p_complete_request_init(mca_part_p2p_request_t* request)
 
 static void mca_part_p2p_request_complete(mca_part_p2p_request_t* request)
 {
-    opal_output_verbose(50, ompi_part_base_framework.framework_output, "request %p completed", request);
+    opal_output_verbose(50, ompi_part_base_framework.framework_output, "part request %p completed", request);
     /* 'req_status._ucount' is set at request allocation,
      * while MPI_SOURCE and MPI_TAG are set after initialization. */
     request->super.req_status.MPI_ERROR = OMPI_SUCCESS;
@@ -151,10 +140,10 @@ static int mca_part_p2p_progress(void)
     OPAL_LIST_FOREACH_SAFE(current, next, &ompi_part_p2p_module.live_requests, mca_part_p2p_request_list_item_t) {
         mca_part_p2p_request_t* req = current->request;
 
-        if (0 == req->is_initialized) {
+        if ((req->init_state & MCA_PART_P2P_INIT_HANDSHAKE_FLAG) == 0) {
             err = mca_part_p2p_complete_request_init(req);
             if (OMPI_SUCCESS != err) { goto exit_progress; }
-            if (0 != req->is_initialized) {
+            if ((req->init_state & MCA_PART_P2P_INIT_HANDSHAKE_FLAG) != 0) {
                 progress++;
             }
             continue;
@@ -168,36 +157,34 @@ static int mca_part_p2p_progress(void)
         }
 
         if (REQUEST_COMPLETED != req->super.req_complete && OMPI_REQUEST_ACTIVE == req->super.req_state) {
-            size_t done_count = 0;
-            bool is_send = MCA_PART_P2P_REQUEST_SEND == req->type;
+            size_t completed_partitions = 0;
             for (size_t p = 0; p < req->meta.partition_count; p++) {
                 mca_part_p2p_partition_state_t part_state = req->partition_states[p];
 
-                if (is_send && MCA_PART_P2P_PARTITION_INACTIVE == part_state && true == req->partition_ready_flags[p]) {
+                if (MCA_PART_P2P_PARTITION_READY == part_state) {
                     /* MPI_Pready called before request initialization */
-                    ompi_request_t* part_req = req->partition_requests[p];
-                    err = part_req->req_start(1, &part_req);
+                    err = req->partition_requests[p]->req_start(1, &req->partition_requests[p]);
                     if (OMPI_SUCCESS != err) { goto exit_progress; }
-                    part_state = MCA_PART_P2P_PARTITION_STARTED;
+                    part_state = MCA_PART_P2P_PARTITION_WAITING;
                     req->partition_states[p] = part_state;
                     progress++;
                 }
 
-                if (MCA_PART_P2P_PARTITION_STARTED == part_state) {
+                if (MCA_PART_P2P_PARTITION_WAITING == part_state) {
                     int done = false;
-                    err = ompi_request_test((ompi_request_t**) &req->partition_requests[p], &done, MPI_STATUS_IGNORE);
+                    err = ompi_request_test(&req->partition_requests[p], &done, MPI_STATUS_IGNORE);
                     if (OMPI_SUCCESS != err) { goto exit_progress; }
                     if (done) {
-                        part_state = MCA_PART_P2P_PARTITION_COMPLETE;
+                        part_state = MCA_PART_P2P_PARTITION_COMPLETED;
                         req->partition_states[p] = part_state;
                         progress++;
                     }
                 }
 
-                done_count += MCA_PART_P2P_PARTITION_COMPLETE == part_state;
+                completed_partitions += MCA_PART_P2P_PARTITION_COMPLETED == part_state;
             }
 
-            if (req->meta.partition_count == done_count) {
+            if (completed_partitions == req->meta.partition_count) {
                 mca_part_p2p_request_complete(req);
                 progress++;
             }
@@ -206,7 +193,7 @@ static int mca_part_p2p_progress(void)
 
 exit_progress:
     if (OMPI_SUCCESS != err) {
-        ompi_rte_abort(err, "part p2p internal failure");
+        ompi_rte_abort(err, "part p2p internal failure (%d)", err);
     }
     OPAL_THREAD_UNLOCK(&ompi_part_p2p_module.lock);
     return progress;
@@ -275,15 +262,10 @@ static int mca_part_p2p_psend_init(
     ));
     if (OMPI_SUCCESS != err) { return err; }
 
-    /* Those arrays need to be available early, to allow 'MPI_Start' to use them */
-    req->partition_states = malloc(parts * sizeof(mca_part_p2p_partition_state_t));
-    req->partition_ready_flags = calloc(parts, sizeof(opal_atomic_int32_t));
-    if (NULL == req->partition_states || NULL == req->partition_ready_flags) {
+    /* This array needs to be available early, to allow 'MPI_Start' to use them before initialization is complete */
+    req->partition_states = calloc(parts, sizeof(mca_part_p2p_partition_state_t));
+    if (NULL == req->partition_states) {
         return OMPI_ERR_OUT_OF_RESOURCE;
-    }
-
-    for (size_t i = 0; i < parts; i++) {
-        req->partition_states[i] = MCA_PART_P2P_PARTITION_INACTIVE;
     }
 
     /* Add the request to the list of requests to progress */
@@ -363,41 +345,34 @@ static int mca_part_p2p_start(size_t count, ompi_request_t** requests)
             return OMPI_ERR_REQUEST;
         }
 
+        mca_part_p2p_init_state_t init_state = req->init_state;
+        if ((MCA_PART_P2P_INIT_START_FLAG & init_state) == 0) {
+            init_state = opal_atomic_or_fetch_32(&req->init_state, MCA_PART_P2P_INIT_START_FLAG);
+        }
+
         switch (req->type) {
         case MCA_PART_P2P_REQUEST_SEND: {
-            req->super.req_state = OMPI_REQUEST_ACTIVE;
-            req->super.req_complete = REQUEST_PENDING;
+            for (size_t p = 0; p < req->meta.partition_count; p++) {
+                req->partition_states[p] = MCA_PART_P2P_PARTITION_INACTIVE;
+            }
             break;
         }
         case MCA_PART_P2P_REQUEST_RECV: {
-            /* To ensure proper synchronization with the request's initialization (which may start requests as well),
-             * we must first mark the request as active, then test if it is initialized. */
-            req->super.req_complete = REQUEST_PENDING;
-            req->super.req_state = OMPI_REQUEST_ACTIVE;
-
-            bool can_start = req->is_initialized == 2;
-            if (!can_start) {
-                int32_t expected = 1;
-                can_start = OPAL_ATOMIC_COMPARE_EXCHANGE_STRONG_32(&req->is_initialized, &expected, 2);
-            }
-
-            if (can_start) {
+            if (MCA_PART_P2P_INIT_DONE == init_state) {
+                int err = req->partition_requests[0]->req_start(req->meta.partition_count, &req->partition_requests[0]);
+                if (OMPI_SUCCESS != err) { return err; }
                 for (size_t p = 0; p < req->meta.partition_count; p++) {
-                    int err = req->partition_requests[p]->req_start(1, &req->partition_requests[p]);
-                    if (OMPI_SUCCESS != err) { return err; }
-                    req->partition_states[p] = MCA_PART_P2P_PARTITION_STARTED;
+                    req->partition_states[p] = MCA_PART_P2P_PARTITION_WAITING;
                 }
-                opal_output_verbose(50, ompi_part_base_framework.framework_output, "started partitions of request %p", req);
-            } else {
-                /* We don't know the number of partition requests yet, so 'req->partition_ready_flags' cannot be used.
-                 * Instead, the requests will be started immediately after initialization. */
             }
             break;
         }
         default:
             return OMPI_ERR_REQUEST;
         }
-        opal_output_verbose(50, ompi_part_base_framework.framework_output, "started request %p", req);
+
+        req->super.req_state = OMPI_REQUEST_ACTIVE;
+        req->super.req_complete = REQUEST_PENDING;
     }
     return OMPI_SUCCESS;
 }
@@ -414,15 +389,17 @@ static int mca_part_p2p_pready(size_t min_part, size_t max_part, ompi_request_t*
     } else {
         /* On the send side, the number of partition requests matches the user's partition count,
          * so we can use 'min_part' and 'max_part' directly. */
-        if (0 != req->is_initialized) {
+        if (MCA_PART_P2P_INIT_DONE == req->init_state) {
             ompi_request_t* first_part_req = req->partition_requests[min_part];
             err = first_part_req->req_start(max_part - min_part + 1, &first_part_req);
             for (size_t p = min_part; p <= max_part; p++) {
-                req->partition_states[p] = MCA_PART_P2P_PARTITION_STARTED;
+                req->partition_states[p] = MCA_PART_P2P_PARTITION_WAITING;
             }
-        }
-        for (size_t p = min_part; p <= max_part; p++) {
-            req->partition_ready_flags[p] = true;
+        } else {
+            /* Schedule the requests to be started in the progress loop after initialization is done */
+            for (size_t p = min_part; p <= max_part; p++) {
+                req->partition_states[p] = MCA_PART_P2P_PARTITION_READY;
+            }
         }
     }
     return err;
@@ -440,7 +417,7 @@ static int mca_part_p2p_parrived(size_t min_part, size_t max_part, int* flag, om
         err = OMPI_ERR_BAD_PARAM;
     } else if (OMPI_REQUEST_INACTIVE == req->super.req_state) {
         has_arrived = true;
-    } else if (2 != req->is_initialized) {
+    } else if (MCA_PART_P2P_INIT_DONE != req->init_state) {
         has_arrived = false;
     } else {
         size_t min_send_part = min_part;
@@ -456,7 +433,7 @@ static int mca_part_p2p_parrived(size_t min_part, size_t max_part, int* flag, om
 
         has_arrived = true;
         for (size_t p = min_send_part; p <= max_send_part; p++) {
-            has_arrived &= MCA_PART_P2P_PARTITION_COMPLETE == req->partition_states[p];
+            has_arrived &= MCA_PART_P2P_PARTITION_COMPLETED == req->partition_states[p];
         }
     }
 
@@ -478,7 +455,6 @@ int mca_part_p2p_free(ompi_request_t** request)
         return OMPI_ERROR;
     }
     req->to_delete = true;
-    opal_output_verbose(50, ompi_part_base_framework.framework_output, "freed request %p", req);
 
     *request = MPI_REQUEST_NULL;
     return OMPI_SUCCESS;
@@ -497,21 +473,4 @@ ompi_part_p2p_module_t ompi_part_p2p_module = {
 };
 
 
-static void mca_part_p2p_request_list_item_construct(mca_part_p2p_request_list_item_t* item)
-{
-    item->request = NULL;
-}
-
-
-static void mca_part_p2p_request_list_item_destruct(mca_part_p2p_request_list_item_t* item)
-{
-    item->request = NULL;
-}
-
-
-// OBJ_CLASS_INSTANCE(mca_part_p2p_request_list_item_t, opal_list_item_t, NULL, NULL);
-OBJ_CLASS_INSTANCE(
-    mca_part_p2p_request_list_item_t,
-    opal_list_item_t,
-    mca_part_p2p_request_list_item_construct,
-    mca_part_p2p_request_list_item_destruct);
+OBJ_CLASS_INSTANCE(mca_part_p2p_request_list_item_t, opal_list_item_t, NULL, NULL);
