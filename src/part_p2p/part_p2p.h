@@ -39,6 +39,7 @@ extern ompi_part_p2p_module_t ompi_part_p2p_module;
 
 
 int mca_part_p2p_free(ompi_request_t** request);
+void mca_part_p2p_dump_request_state(ompi_request_t* request, const char* label);
 
 END_C_DECLS
 

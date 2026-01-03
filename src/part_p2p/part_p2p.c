@@ -6,6 +6,95 @@
 #include "part_p2p.h"
 
 
+void mca_part_p2p_dump_request_state(ompi_request_t* request, const char* label)
+{
+    int output_id = ompi_part_base_framework.framework_output;
+    if (NULL == request || OMPI_REQUEST_PART != request->req_type) {
+        opal_output(output_id, "%s --- request %p is not a partitioned request\n", label, request);
+        return;
+    }
+
+    mca_part_p2p_request_t* req = (mca_part_p2p_request_t*) request;
+    mca_part_p2p_init_state_t init_state = req->init_state;
+    int req_type = req->type;
+    if (0 == init_state) {
+        int init_send_done = MPI_REQUEST_NULL == req->init_req;
+        opal_output(output_id, "%s --- %s request %p is not yet initialized (state=%d), send_done=%d\n",
+                label, req_type == MCA_PART_P2P_REQUEST_SEND ? "send" : "recv", request, init_state, init_send_done);
+        return;
+    }
+
+    int peer_rank = req->peer_rank;
+    int peer_tag  = req->super.req_status.MPI_TAG;
+    int first_tag = req->meta.first_part_tag;
+    size_t part_count = req->meta.partition_count;
+    size_t user_parts = req->user_partition_count;
+    int last_tag  = first_tag + part_count;
+
+    ompi_request_t** part_reqs = req->partition_requests;
+    volatile mca_part_p2p_partition_state_t* part_ready = req->partition_states;
+    int to_delete = req->to_delete;
+    if (to_delete || part_reqs == NULL || part_ready == NULL) {
+        opal_output(output_id, "%s --- %s request %p is scheduled for deletion\n",
+                label, req_type == MCA_PART_P2P_REQUEST_SEND ? "send" : "recv", request);
+        return;
+    }
+
+    const size_t msg_len = 4096;
+    char msg[msg_len];
+    size_t remaining_len = msg_len;
+    size_t written = 0;
+    char* msg_pos = msg;
+
+    int completed = REQUEST_COMPLETED == req->super.req_complete;
+    int active = OMPI_REQUEST_ACTIVE == req->super.req_state;
+
+    written = snprintf(msg_pos, remaining_len,
+        "%s --- request %p %s rank %d (tag %d) with %ld parts (%ld user, tags %d to %d), active=%d, completed=%d, to_delete=%d, init=%d, parts:",
+        label, request, req_type == MCA_PART_P2P_REQUEST_SEND ? "sends to" : "receives from",
+        peer_rank, peer_tag, part_count, user_parts, first_tag, last_tag, active, completed, to_delete, init_state);
+    msg_pos += written;
+    remaining_len = remaining_len >= written ? remaining_len - written : 0;
+
+    for (size_t p = 0; p < part_count && remaining_len > 0; p++) {
+        ompi_request_t* part_req = part_reqs[p];
+        mca_part_p2p_partition_state_t ready = part_ready[p];
+
+        completed = REQUEST_COMPLETED == req->super.req_complete;
+
+        int state = part_req->req_state;
+        const char* state_str =
+            state == OMPI_REQUEST_INACTIVE  ? "INACTIVE" :
+            state == OMPI_REQUEST_ACTIVE    ? "ACTIVE"   :
+            state == OMPI_REQUEST_CANCELLED ? "CANCEL"   :
+            state == OMPI_REQUEST_INVALID   ? "INVALID"  : "???";
+
+        const char* part_state_str =
+            ready == MCA_PART_P2P_PARTITION_INACTIVE  ? "INACTIVE"  :
+            ready == MCA_PART_P2P_PARTITION_WAITING   ? "STARTED"   :
+            ready == MCA_PART_P2P_PARTITION_READY     ? "READY"     :
+            ready == MCA_PART_P2P_PARTITION_COMPLETED ? (req_type == MCA_PART_P2P_REQUEST_SEND ? "COMPLETED" : "ARRIVED") : "???";
+
+        written = snprintf(msg_pos, remaining_len, "\n - %3ld (%9s), ready=%d, completed=%d, state=%8s",
+            p, part_state_str, ready, completed, state_str);
+        msg_pos += written;
+        remaining_len = remaining_len >= written ? remaining_len - written : 0;
+    }
+
+    if (remaining_len == 0) {
+        // add '...' at the end indicating that the output was truncated
+        msg[msg_len - 4] = '.';
+        msg[msg_len - 3] = '.';
+        msg[msg_len - 2] = '.';
+    } else {
+        // Normal message end
+        snprintf(msg_pos, remaining_len, "\n");
+    }
+    msg[msg_len - 1] = '\0';  // just to be sure
+    opal_output(output_id, "%s", msg);
+}
+
+
 static int mca_part_p2p_init_module(void)
 {
     if (0 != OPAL_THREAD_TRYLOCK(&ompi_part_p2p_module.lock)) {
