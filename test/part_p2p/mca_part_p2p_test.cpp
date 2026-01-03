@@ -229,6 +229,30 @@ MPI_TEST_CASE("self-exchange", 1) {
 }
 
 
+MPI_TEST_CASE("partition tags", 2) {
+    MPI_CHECK_RES(MPI_Comm_set_errhandler(MPI_COMM_WORLD, MPI_ERRORS_RETURN));
+    MPI_CHECK_RES(MPI_Comm_set_errhandler(test_comm, MPI_ERRORS_RETURN));
+
+    size_t original_tag = ompi_part_p2p_module.next_tag;
+    MPI_Request send_request;
+    int err;
+
+    ompi_part_p2p_module.next_tag = INT_MAX;
+    err = MPI_Psend_init(nullptr, 1, 1, MPI_INT, test_rank ^ 1, 0, test_comm, MPI_INFO_NULL, &send_request);
+    CHECK_EQ(err, MPI_ERR_TAG);
+
+    ompi_part_p2p_module.next_tag = 1000;
+    err = MPI_Psend_init(nullptr, INT_MAX - 100UL, 1, MPI_INT, test_rank ^ 1, 0, test_comm, MPI_INFO_NULL, &send_request);
+    CHECK_EQ(err, MPI_ERR_TAG);
+
+    // After exceeding the maximum tag value, there is no way to recover (for now)
+    err = MPI_Psend_init(nullptr, 1, 1, MPI_INT, test_rank ^ 1, 0, test_comm, MPI_INFO_NULL, &send_request);
+    CHECK_EQ(err, MPI_ERR_TAG);
+
+    ompi_part_p2p_module.next_tag = original_tag;
+}
+
+
 MPI_TEST_CASE("parallel partitions", 2) {
     MPI_CHECK_RES(MPI_Comm_set_errhandler(MPI_COMM_WORLD, MPI_ERRORS_RETURN));
     MPI_CHECK_RES(MPI_Comm_set_errhandler(test_comm, MPI_ERRORS_RETURN));

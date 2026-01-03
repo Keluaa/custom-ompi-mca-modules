@@ -326,11 +326,15 @@ static int mca_part_p2p_psend_init(
     }
     mca_part_p2p_request_init(req, MCA_PART_P2P_REQUEST_SEND, buf, parts, count, datatype, dst, tag, comm);
 
+    // TODO: we need to manage tags to avoid encountering this error at runtime
     size_t first_part_tag = opal_atomic_fetch_add_size_t(&ompi_part_p2p_module.next_tag, parts);
     size_t last_part_tag = first_part_tag + parts;
-    if (first_part_tag > INT_MAX || last_part_tag > INT_MAX) {
-        /* int overflow: too many partitions */
-        return OMPI_ERR_BAD_PARAM;
+    int max_tag = mca_pml.pml_max_tag;
+    if (last_part_tag >= max_tag || first_part_tag > INT_MAX || last_part_tag > INT_MAX) {
+        opal_output_verbose(ompi_part_base_framework.framework_output, 10,
+            "global partition tag (%ld) exceeded the maximum PML tag (%d) while allocating %ld partitions",
+            last_part_tag, max_tag, parts);
+        return MPI_ERR_TAG;
     }
 
     /* Partitions are transmitted in a duplicate of MPI_COMM_WORLD, not in the 'comm'
