@@ -9,7 +9,7 @@
 
 void mca_part_p2p_request_init(
     mca_part_p2p_request_t* request,
-    mca_part_p2p_request_enum_t type,
+    mca_part_p2p_request_type_t type,
     const void* buf, size_t parts, size_t count,
     ompi_datatype_t* datatype, int target, int tag,
     ompi_communicator_t* comm)

@@ -9,8 +9,7 @@ BEGIN_C_DECLS
 typedef enum {
     MCA_PART_P2P_REQUEST_SEND,
     MCA_PART_P2P_REQUEST_RECV,
-    MCA_PART_P2P_REQUEST_NULL,  // TODO: useful??
-} mca_part_p2p_request_enum_t;  // TODO: rename
+} mca_part_p2p_request_type_t;
 
 
 typedef enum {
@@ -41,7 +40,7 @@ typedef struct mca_part_p2p_request_meta_t mca_part_p2p_request_meta_t;
 
 struct mca_part_p2p_request_t {
     ompi_request_t super;
-    mca_part_p2p_request_enum_t type;
+    mca_part_p2p_request_type_t type;
     opal_atomic_int32_t to_delete;
 
     /** Rank of peer in MPI_COMM_WORLD.
@@ -71,7 +70,7 @@ OBJ_CLASS_DECLARATION(mca_part_p2p_request_t);
 
 void mca_part_p2p_request_init(
     mca_part_p2p_request_t* request,
-    mca_part_p2p_request_enum_t type,
+    mca_part_p2p_request_type_t type,
     const void* buf, size_t parts, size_t count,
     ompi_datatype_t* datatype, int target, int tag,
     struct ompi_communicator_t* comm);

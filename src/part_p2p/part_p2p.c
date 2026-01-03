@@ -447,6 +447,7 @@ static int mca_part_p2p_start(size_t count, ompi_request_t** requests)
             break;
         }
         case MCA_PART_P2P_REQUEST_RECV: {
+            /* If we can't start the requests now, it will be done after initialization */
             if (MCA_PART_P2P_INIT_DONE == init_state) {
                 int err = req->partition_requests[0]->req_start(req->meta.partition_count, &req->partition_requests[0]);
                 if (OMPI_SUCCESS != err) { return err; }
