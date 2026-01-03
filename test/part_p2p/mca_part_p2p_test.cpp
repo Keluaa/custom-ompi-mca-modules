@@ -236,20 +236,17 @@ MPI_TEST_CASE("exchange", 2) {
 MPI_TEST_CASE("self-exchange", 1) {
     MPI_CHECK_RES(MPI_Comm_set_errhandler(MPI_COMM_WORLD, MPI_ERRORS_RETURN));
     MPI_CHECK_RES(MPI_Comm_set_errhandler(test_comm, MPI_ERRORS_RETURN));
-    return;  // TODO: this test aborts, most likely due to a initialization requests mismatch
 
     constexpr size_t N = 1000;
     constexpr size_t P = 5;
     std::vector<int> send_buffer(N*P, 0), recv_buffer(N*P, 0);
 
     // Same test as "exchange", but with the same rank
-    int peer     = test_rank;
-    int send_tag = test_rank;
-    int recv_tag = test_rank ^ 1;
+    int peer = test_rank;
 
     MPI_Request send_request, recv_request;
-    MPI_CHECK_RES(MPI_Psend_init(send_buffer.data(), P, N, MPI_INT, peer, send_tag, test_comm, MPI_INFO_NULL, &send_request));
-    MPI_CHECK_RES(MPI_Precv_init(recv_buffer.data(), P, N, MPI_INT, peer, recv_tag, test_comm, MPI_INFO_NULL, &recv_request));
+    MPI_CHECK_RES(MPI_Psend_init(send_buffer.data(), P, N, MPI_INT, peer, 0, test_comm, MPI_INFO_NULL, &send_request));
+    MPI_CHECK_RES(MPI_Precv_init(recv_buffer.data(), P, N, MPI_INT, peer, 0, test_comm, MPI_INFO_NULL, &recv_request));
 
     int v = send_buffer.size() * test_rank;
     for (int i = 0; i < send_buffer.size(); i++) {
