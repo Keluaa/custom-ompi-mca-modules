@@ -59,6 +59,7 @@ struct mca_part_p2p_request_t {
     size_t partition_size;        /**< Number of elements per partition */
     ompi_datatype_t* datatype;    /**< Datatype of buffer elements */
     const void* user_data;        /**< Contiguous user buffer for the partitions */
+    int aggregation_factor;       /**< Ratio of 'user/real' partitions (sender side only) */
 
     /* Data required for initialization */
     opal_atomic_int32_t init_state;  /**< A 'mca_part_p2p_init_state_t' value */

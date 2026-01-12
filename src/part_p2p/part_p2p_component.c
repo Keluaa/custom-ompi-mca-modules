@@ -31,12 +31,12 @@ mca_part_p2p_component_t mca_part_p2p_component = {
         .partm_finalize = mca_part_p2p_component_finalize,
     },
     .priority = 5,
+    .default_aggregation_factor = 1,
 };
 
 
 static int mca_part_p2p_component_register(void)
 {
-    // TODO: register MCA parameters
     mca_base_component_t* version = &mca_part_p2p_component.super.partm_version;
 
     mca_base_component_var_register(version,
@@ -44,6 +44,12 @@ static int mca_part_p2p_component_register(void)
         MCA_BASE_VAR_TYPE_INT, NULL, 0,
         MCA_BASE_VAR_FLAG_SETTABLE, OPAL_INFO_LVL_9, MCA_BASE_VAR_SCOPE_ALL,
         &mca_part_p2p_component.priority);
+
+    mca_base_component_var_register(version,
+        "default_aggregation_factor", "Default aggregation factor of user partitions",
+        MCA_BASE_VAR_TYPE_INT, NULL, 0,
+        MCA_BASE_VAR_FLAG_SETTABLE, OPAL_INFO_LVL_5, MCA_BASE_VAR_SCOPE_LOCAL,
+        &mca_part_p2p_component.default_aggregation_factor);
 
     return OPAL_SUCCESS;
 }
