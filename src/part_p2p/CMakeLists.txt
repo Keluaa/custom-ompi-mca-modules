@@ -3,6 +3,7 @@ add_library(mca_part_p2p SHARED
     part_p2p.c
     part_p2p.h
     part_p2p_component.c
+    part_p2p_component.h
     part_p2p_request.c
     part_p2p_request.h
 )

@@ -5,6 +5,8 @@
 #include "part_p2p_request.h"
 #include "part_p2p.h"
 
+#include "part_p2p_component.h"
+
 
 void mca_part_p2p_dump_request_state(ompi_request_t* request, const char* label)
 {
@@ -29,7 +31,8 @@ void mca_part_p2p_dump_request_state(ompi_request_t* request, const char* label)
     int first_tag = req->meta.first_part_tag;
     size_t part_count = req->meta.partition_count;
     size_t user_parts = req->user_partition_count;
-    int last_tag  = first_tag + part_count;
+    size_t last_tag   = first_tag + part_count;
+    int aggregation_factor = req->aggregation_factor;
 
     ompi_request_t** part_reqs = req->partition_requests;
     volatile mca_part_p2p_partition_state_t* part_ready = req->partition_states;
@@ -50,9 +53,11 @@ void mca_part_p2p_dump_request_state(ompi_request_t* request, const char* label)
     int active = OMPI_REQUEST_ACTIVE == req->super.req_state;
 
     written = snprintf(msg_pos, remaining_len,
-        "%s --- request %p %s rank %d (tag %d) with %ld parts (%ld user, tags %d to %d), active=%d, completed=%d, to_delete=%d, init=%d, parts:",
+        "%s --- request %p %s rank %d (tag %d) with %ld parts (%ld user, aggr_factor=%d, tags %d to %ld),"
+        "active=%d, completed=%d, to_delete=%d, init=%d, parts:",
         label, request, req_type == MCA_PART_P2P_REQUEST_SEND ? "sends to" : "receives from",
-        peer_rank, peer_tag, part_count, user_parts, first_tag, last_tag, active, completed, to_delete, init_state);
+        peer_rank, peer_tag, part_count, user_parts, aggregation_factor, first_tag, last_tag,
+        active, completed, to_delete, init_state);
     msg_pos += written;
     remaining_len = remaining_len >= written ? remaining_len - written : 0;
 
@@ -326,28 +331,45 @@ static int mca_part_p2p_psend_init(
     }
     mca_part_p2p_request_init(req, MCA_PART_P2P_REQUEST_SEND, buf, parts, count, datatype, dst, tag, comm);
 
-    // TODO: we need to manage tags to avoid encountering this error at runtime
-    size_t first_part_tag = opal_atomic_fetch_add_size_t(&ompi_part_p2p_module.next_tag, parts);
-    size_t last_part_tag = first_part_tag + parts;
-    int max_tag = mca_pml.pml_max_tag;
-    if (last_part_tag >= max_tag || first_part_tag > INT_MAX || last_part_tag > INT_MAX) {
-        opal_output_verbose(ompi_part_base_framework.framework_output, 10,
-            "global partition tag (%ld) exceeded the maximum PML tag (%d) while allocating %ld partitions",
-            last_part_tag, max_tag, parts);
-        return MPI_ERR_TAG;
-    }
-
     /* Partitions are transmitted in a duplicate of MPI_COMM_WORLD, not in the 'comm'
      * given by the user, allowing to use different tags for each request of a partition.
      * Before moving to this duplicate comm, we must know which rank 'dst' corresponds to. */
     err = mca_part_p2p_lookup_peer_rank_in_world(comm, dst, &req->peer_rank);
     if (OMPI_SUCCESS != err) { return err; }
 
+    int is_set = false;
+    opal_cstring_t* aggregator_factor_str = NULL;
+    err = ompi_info_get(info, "ompi_part_aggregation_factor", &aggregator_factor_str, &is_set);
+    if (OMPI_SUCCESS != err) { return err; }
+    if (is_set) {
+        err = opal_cstring_to_int(aggregator_factor_str, &req->aggregation_factor);
+        if (OPAL_SUCCESS != err) { return err; }
+        OBJ_RELEASE(aggregator_factor_str);
+    } else {
+        req->aggregation_factor = mca_part_p2p_component.default_aggregation_factor;
+    }
+
+    if (req->aggregation_factor <= 0) {
+        return OMPI_ERR_BAD_PARAM;
+    }
+
+    // TODO: we need to manage tags to avoid encountering this error at runtime
+    size_t real_parts     = parts / req->aggregation_factor + (parts % req->aggregation_factor > 0);
+    size_t first_part_tag = opal_atomic_fetch_add_size_t(&ompi_part_p2p_module.next_tag, real_parts);
+    size_t last_part_tag  = first_part_tag + real_parts;
+    int max_tag = mca_pml.pml_max_tag;
+    if (last_part_tag >= max_tag || first_part_tag > INT_MAX || last_part_tag > INT_MAX) {
+        opal_output_verbose(ompi_part_base_framework.framework_output, 10,
+                            "global partition tag (%ld) exceeded the maximum PML tag (%d) while allocating %ld partitions",
+                            last_part_tag, max_tag, real_parts);
+        return MPI_ERR_TAG;
+    }
+
     // TODO: the MPI spec requires that a MPI_Psend_init can only be matched with a MPI_Precv_init,
     //  and this is a clear violation of this requirement.
     /* It is the send side which dictates the number of partitions requests and their tags. */
     req->meta.first_part_tag = (int) first_part_tag;
-    req->meta.partition_count = parts;
+    req->meta.partition_count = real_parts;
     err = MCA_PML_CALL(isend(
         &req->meta, sizeof(mca_part_p2p_request_meta_t), MPI_BYTE,
         dst, tag, MCA_PML_BASE_SEND_STANDARD, comm,
@@ -356,7 +378,7 @@ static int mca_part_p2p_psend_init(
     if (OMPI_SUCCESS != err) { return err; }
 
     /* This array needs to be available early, to allow 'MPI_Start' to use them before initialization is complete */
-    req->partition_states = calloc(parts, sizeof(mca_part_p2p_partition_state_t));
+    req->partition_states = calloc(real_parts, sizeof(mca_part_p2p_partition_state_t));
     if (NULL == req->partition_states) {
         return OMPI_ERR_OUT_OF_RESOURCE;
     }
@@ -481,7 +503,11 @@ static int mca_part_p2p_pready(size_t min_part, size_t max_part, ompi_request_t*
     } else if (min_part > max_part || max_part >= req->user_partition_count) {
         err = OMPI_ERR_BAD_PARAM;
     } else {
-        /* On the send side, the number of partition requests matches the user's partition count,
+        if (1 < req->aggregation_factor) {
+            min_part /= req->aggregation_factor;
+            max_part /= req->aggregation_factor;
+        }
+        /* On the send side, partition requests matches the aggregated user's partition count,
          * so we can use 'min_part' and 'max_part' directly. */
         if (MCA_PART_P2P_INIT_DONE == req->init_state) {
             ompi_request_t* first_part_req = req->partition_requests[min_part];
@@ -514,19 +540,18 @@ static int mca_part_p2p_parrived(size_t min_part, size_t max_part, int* flag, om
     } else if (MCA_PART_P2P_INIT_DONE != req->init_state) {
         has_arrived = false;
     } else {
-        size_t min_send_part = min_part;
-        size_t max_send_part = max_part;
+        /* Partition aggregation isn't done on the receiver's side, only real vs user partition counts matter */
         if (req->user_partition_count != req->meta.partition_count) {
             /* Match the user partitions with the internal ones */
             size_t first_elem = min_part * req->partition_size;
             size_t last_elem  = (max_part + 1) * req->partition_size - 1;
             size_t source_partition_size = req->user_partition_count * req->partition_size / req->meta.partition_count;
-            min_send_part = first_elem / source_partition_size;
-            max_send_part = last_elem / source_partition_size + (last_elem % source_partition_size > 0);
+            min_part = first_elem / source_partition_size;
+            max_part = last_elem / source_partition_size + (last_elem % source_partition_size > 0);
         }
 
         has_arrived = true;
-        for (size_t p = min_send_part; p <= max_send_part; p++) {
+        for (size_t p = min_part; p <= max_part; p++) {
             has_arrived &= MCA_PART_P2P_PARTITION_COMPLETED == req->partition_states[p];
         }
     }

@@ -38,6 +38,7 @@ void mca_part_p2p_request_init(
     request->partition_size = count;
     request->datatype = datatype;
     request->user_data = buf;
+    request->aggregation_factor = 1;
 
     request->init_req = MPI_REQUEST_NULL;
 

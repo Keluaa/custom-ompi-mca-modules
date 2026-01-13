@@ -1,11 +1,9 @@
 
-#include <ompi/communicator/communicator.h>
-
-#include "ompi_config.h"
-#include "ompi/mca/part/base/base.h"
-
+#include "part_p2p_component.h"
 #include "part_p2p.h"
 #include "part_p2p_request.h"
+
+#include "ompi/communicator/communicator.h"
 
 
 static int mca_part_p2p_component_register(void);
@@ -15,27 +13,44 @@ static mca_part_base_module_t* mca_part_p2p_component_initialize(int* priority, 
 static int mca_part_p2p_component_finalize(void);
 
 
-mca_part_base_component_4_0_0_t mca_part_p2p_component = {
-    .partm_version = {
-        MCA_PART_BASE_VERSION_2_0_0,
+mca_part_p2p_component_t mca_part_p2p_component = {
+    .super = {
+        .partm_version = {
+            MCA_PART_BASE_VERSION_2_0_0,
 
-        .mca_component_name = "p2p",
-        MCA_BASE_MAKE_VERSION(component, OMPI_MAJOR_VERSION, OMPI_MINOR_VERSION, OMPI_RELEASE_VERSION),
-        .mca_open_component = mca_part_p2p_component_open,
-        .mca_close_component = mca_part_p2p_component_close,
-        .mca_register_component_params = mca_part_p2p_component_register,
+            .mca_component_name = "p2p",
+            MCA_BASE_MAKE_VERSION(component, OMPI_MAJOR_VERSION, OMPI_MINOR_VERSION, OMPI_RELEASE_VERSION),
+            .mca_open_component = mca_part_p2p_component_open,
+            .mca_close_component = mca_part_p2p_component_close,
+            .mca_register_component_params = mca_part_p2p_component_register,
+        },
+        .partm_data = {
+            MCA_BASE_METADATA_PARAM_NONE
+        },
+        .partm_init = mca_part_p2p_component_initialize,
+        .partm_finalize = mca_part_p2p_component_finalize,
     },
-    .partm_data = {
-        MCA_BASE_METADATA_PARAM_NONE
-    },
-    .partm_init = mca_part_p2p_component_initialize,
-    .partm_finalize = mca_part_p2p_component_finalize,
+    .priority = 5,
+    .default_aggregation_factor = 1,
 };
 
 
 static int mca_part_p2p_component_register(void)
 {
-    // TODO: register MCA parameters
+    mca_base_component_t* version = &mca_part_p2p_component.super.partm_version;
+
+    mca_base_component_var_register(version,
+        "priority", "Priority of the P2P part component",
+        MCA_BASE_VAR_TYPE_INT, NULL, 0,
+        MCA_BASE_VAR_FLAG_SETTABLE, OPAL_INFO_LVL_9, MCA_BASE_VAR_SCOPE_ALL,
+        &mca_part_p2p_component.priority);
+
+    mca_base_component_var_register(version,
+        "default_aggregation_factor", "Default aggregation factor of user partitions",
+        MCA_BASE_VAR_TYPE_INT, NULL, 0,
+        MCA_BASE_VAR_FLAG_SETTABLE, OPAL_INFO_LVL_5, MCA_BASE_VAR_SCOPE_LOCAL,
+        &mca_part_p2p_component.default_aggregation_factor);
+
     return OPAL_SUCCESS;
 }
 
@@ -64,7 +79,7 @@ static int mca_part_p2p_component_open(void)
      * name to this list.
      * See https://github.com/open-mpi/ompi/blob/80bd9de4121a0e11bf278c62a8f4df902eff5f70/ompi/mca/part/base/part_base_frame.c#L141
      */
-    opal_pointer_array_add(&mca_part_base_part, strdup(mca_part_p2p_component.partm_version.mca_component_name));
+    opal_pointer_array_add(&mca_part_base_part, strdup(mca_part_p2p_component.super.partm_version.mca_component_name));
 
     return OMPI_SUCCESS;
 }
@@ -87,7 +102,7 @@ static int mca_part_p2p_component_close(void)
 
 static mca_part_base_module_t* mca_part_p2p_component_initialize(int* priority, bool enable_progress_threads, bool enable_mpi_threads)
 {
-    *priority = 5;
+    *priority = mca_part_p2p_component.priority;
     return &ompi_part_p2p_module.super;
 }
 
