@@ -32,3 +32,11 @@ if(NO_DEPRECATED_VOLATILE)
         -Wno-deprecated-volatile
     )
 endif()
+
+CHECK_CXX_COMPILER_FLAG("-Wno-volatile" NO_VOLATILE)
+if(NO_VOLATILE)
+    # Same with GCC
+    target_compile_options(mca_part_p2p_test PRIVATE
+        -Wno-volatile
+    )
+endif()

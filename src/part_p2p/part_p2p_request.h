@@ -20,7 +20,7 @@ typedef enum {
 } mca_part_p2p_partition_state_t;
 
 
-typedef enum : int32_t {
+typedef enum {
     MCA_PART_P2P_INIT_NONE           = 0b00,
     MCA_PART_P2P_INIT_HANDSHAKE_FLAG = 0b01,  /**< Partitions and arrays are initialized on both processes */
     MCA_PART_P2P_INIT_START_FLAG     = 0b10,  /**< MPI_Start was called for the first time */
