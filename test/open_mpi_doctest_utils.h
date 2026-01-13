@@ -80,17 +80,17 @@ namespace doctest {
 #endif
 
 
-#define MPI_CHECK_RES(expr)              \
-    do {                                 \
-        int res_mpi = (expr);            \
-        REQUIRE(res_mpi == MPI_SUCCESS); \
+#define MPI_CHECK_RES(expr)                \
+    do {                                   \
+        int res_mpi = (expr);              \
+        REQUIRE((res_mpi == MPI_SUCCESS)); \
     } while (false)
 
 
-#define MPI_CHECK_RES_MESSAGE(expr, ...)                         \
-    do {                                                         \
-        int res_mpi = (expr);                                    \
-        REQUIRE_MESSAGE(res_mpi == MPI_SUCCESS, ## __VA_ARGS__); \
+#define MPI_CHECK_RES_MESSAGE(expr, ...)                           \
+    do {                                                           \
+        int res_mpi = (expr);                                      \
+        REQUIRE_MESSAGE((res_mpi == MPI_SUCCESS), ## __VA_ARGS__); \
     } while (false)
 
 
