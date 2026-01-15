@@ -35,7 +35,7 @@ void mca_part_p2p_dump_request_state(ompi_request_t* request, const char* label)
     int aggregation_factor = req->aggregation_factor;
 
     ompi_request_t** part_reqs = req->partition_requests;
-    volatile mca_part_p2p_partition_state_t* part_ready = req->partition_states;
+    volatile int32_t* part_ready = req->partition_states;
     int to_delete = req->to_delete;
     if (to_delete || part_reqs == NULL || part_ready == NULL) {
         opal_output(output_id, "%s --- %s request %p is scheduled for deletion\n",
@@ -63,7 +63,14 @@ void mca_part_p2p_dump_request_state(ompi_request_t* request, const char* label)
 
     for (size_t p = 0; p < part_count && remaining_len > 0; p++) {
         ompi_request_t* part_req = part_reqs[p];
-        mca_part_p2p_partition_state_t ready = part_ready[p];
+        int32_t ready_value = part_ready[p];
+        mca_part_p2p_partition_state_t ready = ready_value;
+        int32_t partial_completion = 0;
+        if (0 > ready_value) {
+            /* Number of user partitions marked as ready for this partition */
+            partial_completion = -ready_value;
+            ready = MCA_PART_P2P_PARTITION_INACTIVE;
+        }
 
         completed = REQUEST_COMPLETED == req->super.req_complete;
 
@@ -75,13 +82,14 @@ void mca_part_p2p_dump_request_state(ompi_request_t* request, const char* label)
             state == OMPI_REQUEST_INVALID   ? "INVALID"  : "???";
 
         const char* part_state_str =
+            partial_completion > 0                    ? "PARTIAL"   :
             ready == MCA_PART_P2P_PARTITION_INACTIVE  ? "INACTIVE"  :
             ready == MCA_PART_P2P_PARTITION_WAITING   ? "STARTED"   :
             ready == MCA_PART_P2P_PARTITION_READY     ? "READY"     :
             ready == MCA_PART_P2P_PARTITION_COMPLETED ? (req_type == MCA_PART_P2P_REQUEST_SEND ? "COMPLETED" : "ARRIVED") : "???";
 
-        written = snprintf(msg_pos, remaining_len, "\n - %3ld (%9s), ready=%d, completed=%d, state=%8s",
-            p, part_state_str, ready, completed, state_str);
+        written = snprintf(msg_pos, remaining_len, "\n - %3ld (%9s), ready=%d, completed=%d, state=%8s (partial: %d)",
+            p, part_state_str, ready, completed, state_str, partial_completion);
         msg_pos += written;
         remaining_len = remaining_len >= written ? remaining_len - written : 0;
     }
@@ -147,32 +155,40 @@ static int mca_part_p2p_complete_request_init(mca_part_p2p_request_t* request)
     size_t parts = request->meta.partition_count;
     if (MCA_PART_P2P_REQUEST_RECV == request->type) {
         /* This array is already allocated and initialized on the send side */
-        request->partition_states = calloc(parts, sizeof(int));
+        request->partition_states = calloc(parts, sizeof(int32_t));
     }
     request->partition_requests = malloc(parts * sizeof(ompi_request_t*));
     if (NULL == request->partition_states || NULL == request->partition_requests) {
         return OMPI_ERR_OUT_OF_RESOURCE;
     }
 
-    size_t partition_bytes;
-    err = ompi_datatype_type_size(request->datatype, &partition_bytes);
+    // TODO:
+    //   total_elements     is sync (otherwise it is wrong)
+    //   elements_per_part  is missing 'aggregation factor' on the receive side
+
+    size_t total_elements    = request->partition_size * request->user_partition_count;
+    size_t elements_per_part = request->partition_size * request->aggregation_factor;
+
+    size_t bytes_per_part;
+    err = ompi_datatype_type_size(request->datatype, &bytes_per_part);
     if (OMPI_SUCCESS != err) { return err; }
-    partition_bytes *= request->partition_size;
+    bytes_per_part *= elements_per_part;
 
     /* Initiate the persistent requests for each partition */
     for (size_t p = 0; p < parts; p++) {
-        void* partition_data = ((char*) request->user_data) + partition_bytes * p;
+        void* partition_data = ((char*) request->user_data) + bytes_per_part * p;
+        size_t partition_size = MIN(elements_per_part, total_elements - elements_per_part * p);
         ompi_request_t* part_request;
         if (MCA_PART_P2P_REQUEST_SEND == request->type) {
             err = MCA_PML_CALL(isend_init(
-                partition_data, request->partition_size, request->datatype,
+                partition_data, partition_size, request->datatype,
                 request->peer_rank, request->meta.first_part_tag + p, MCA_PML_BASE_SEND_STANDARD,
                 ompi_part_p2p_module.part_comm, &part_request
             ));
             if (OMPI_SUCCESS != err) { return err; }
         } else {
             err = MCA_PML_CALL(irecv_init(
-                partition_data, request->partition_size, request->datatype,
+                partition_data, partition_size, request->datatype,
                 request->peer_rank, request->meta.first_part_tag + p,
                 ompi_part_p2p_module.part_comm, &part_request
             ));
@@ -294,6 +310,48 @@ exit_progress:
 }
 
 
+static int mca_part_p2p_compute_aggregation_factor(ompi_info_t* info, size_t part_size, ompi_datatype_t* datatype, int* aggregation_factor)
+{
+    int is_set = false;
+    opal_cstring_t* param_str = NULL;
+    int err = ompi_info_get(info, "ompi_part_aggregation_factor", &param_str, &is_set);
+    if (OMPI_SUCCESS != err) { return err; }
+    if (is_set) {
+        err = opal_cstring_to_int(param_str, aggregation_factor);
+        if (OPAL_SUCCESS != err) { return err; }
+        OBJ_RELEASE(param_str);
+    } else {
+        int min_partition_size_kb = 0;
+        err = ompi_info_get(info, "ompi_min_partition_size", &param_str, &is_set);
+        if (OMPI_SUCCESS != err) { return err; }
+        if (is_set) {
+            err = opal_cstring_to_int(param_str, &min_partition_size_kb);
+            if (OPAL_SUCCESS != err) { return err; }
+            OBJ_RELEASE(param_str);
+        } else {
+            min_partition_size_kb = mca_part_p2p_component.default_min_partition_size;
+        }
+
+        size_t min_partition_size = min_partition_size_kb * 1000;  /* kilobytes to bytes */
+        size_t part_bytes = 0;
+        ompi_datatype_type_size(datatype, &part_bytes);
+        part_bytes *= part_size;
+
+        if (min_partition_size <= part_bytes || min_partition_size == 0 || part_bytes == 0) {
+            *aggregation_factor = 1;
+        } else {
+            *aggregation_factor = (int) (min_partition_size / part_bytes);
+        }
+    }
+
+    if (*aggregation_factor <= 0) {
+        return OMPI_ERR_BAD_PARAM;
+    }
+
+    return OMPI_SUCCESS;
+}
+
+
 static int mca_part_p2p_lookup_peer_rank_in_world(ompi_communicator_t* comm, int peer_rank, int* world_rank)
 {
     if (MPI_COMM_WORLD == comm) {
@@ -337,21 +395,8 @@ static int mca_part_p2p_psend_init(
     err = mca_part_p2p_lookup_peer_rank_in_world(comm, dst, &req->peer_rank);
     if (OMPI_SUCCESS != err) { return err; }
 
-    int is_set = false;
-    opal_cstring_t* aggregator_factor_str = NULL;
-    err = ompi_info_get(info, "ompi_part_aggregation_factor", &aggregator_factor_str, &is_set);
+    err = mca_part_p2p_compute_aggregation_factor(info, count, datatype, &req->aggregation_factor);
     if (OMPI_SUCCESS != err) { return err; }
-    if (is_set) {
-        err = opal_cstring_to_int(aggregator_factor_str, &req->aggregation_factor);
-        if (OPAL_SUCCESS != err) { return err; }
-        OBJ_RELEASE(aggregator_factor_str);
-    } else {
-        req->aggregation_factor = mca_part_p2p_component.default_aggregation_factor;
-    }
-
-    if (req->aggregation_factor <= 0) {
-        return OMPI_ERR_BAD_PARAM;
-    }
 
     // TODO: we need to manage tags to avoid encountering this error at runtime
     size_t real_parts     = parts / req->aggregation_factor + (parts % req->aggregation_factor > 0);
@@ -378,7 +423,7 @@ static int mca_part_p2p_psend_init(
     if (OMPI_SUCCESS != err) { return err; }
 
     /* This array needs to be available early, to allow 'MPI_Start' to use them before initialization is complete */
-    req->partition_states = calloc(real_parts, sizeof(mca_part_p2p_partition_state_t));
+    req->partition_states = calloc(real_parts, sizeof(int32_t));
     if (NULL == req->partition_states) {
         return OMPI_ERR_OUT_OF_RESOURCE;
     }
@@ -494,6 +539,13 @@ static int mca_part_p2p_start(size_t count, ompi_request_t** requests)
 }
 
 
+static int mca_part_p2p_last_aggregated_partition_size(mca_part_p2p_request_t* req)
+{
+    int extra_user_partitions = (int) (req->meta.partition_count * req->aggregation_factor - req->user_partition_count);
+    return req->aggregation_factor - extra_user_partitions;
+}
+
+
 static int mca_part_p2p_pready(size_t min_part, size_t max_part, ompi_request_t* request)
 {
     int err = OMPI_SUCCESS;
@@ -503,22 +555,84 @@ static int mca_part_p2p_pready(size_t min_part, size_t max_part, ompi_request_t*
     } else if (min_part > max_part || max_part >= req->user_partition_count) {
         err = OMPI_ERR_BAD_PARAM;
     } else {
+        size_t min_full = min_part;
+        size_t max_full = max_part + 1;  /* exclusive */
+        int32_t min_partial = 0;  /* Number of partially completed user partitions at 'min_full - 1' */
+        int32_t max_partial = 0;  /* Number of partially completed user partitions at 'max_full' */
         if (1 < req->aggregation_factor) {
-            min_part /= req->aggregation_factor;
-            max_part /= req->aggregation_factor;
+            /* Convert user partition indices to aggregated partitions indices */
+            size_t  min_part_div = min_part / req->aggregation_factor;
+            int32_t min_part_rem = (int32_t) (min_part % req->aggregation_factor);
+            if (max_part == min_part) {
+                /* Optimization for 'MPI_Pready(part_idx, req)' */
+                min_partial = 1;
+                max_full = min_part_div;
+            } else {
+                size_t  max_part_div = max_part / req->aggregation_factor;
+                int32_t max_part_rem = (int32_t) (max_part % req->aggregation_factor);
+                if (min_part_div == max_part_div) {
+                    min_partial = max_part_rem - min_part_rem + 1;
+                    max_full = min_part_div;
+                } else {
+                    min_partial = min_part_rem > 0 ? req->aggregation_factor - min_part_rem : 0;
+                    max_partial = max_part_rem + 1;
+                    max_full = max_part_div;
+                }
+            }
+            min_full = min_part_div + (min_partial > 0);
         }
-        /* On the send side, partition requests matches the aggregated user's partition count,
-         * so we can use 'min_part' and 'max_part' directly. */
+
+        /* 'full' partitions are those where all user partitions are marked as ready, and therefore
+         * we can start their respective request.
+         * Only fully completed partitions are marked as such, therefore 'min_full' and 'max_full' exclude
+         * partially completed partitions. */
+        mca_part_p2p_partition_state_t part_states;
         if (MCA_PART_P2P_INIT_DONE == req->init_state) {
-            ompi_request_t* first_part_req = req->partition_requests[min_part];
-            err = first_part_req->req_start(max_part - min_part + 1, &first_part_req);
-            for (size_t p = min_part; p <= max_part; p++) {
-                req->partition_states[p] = MCA_PART_P2P_PARTITION_WAITING;
+            part_states = MCA_PART_P2P_PARTITION_WAITING;
+            if (max_full > min_full) {
+                ompi_request_t* first_part_req = req->partition_requests[min_full];
+                err = first_part_req->req_start(max_full - min_full, &first_part_req);
+                if (OMPI_SUCCESS != err) { return err; }
             }
         } else {
             /* Schedule the requests to be started in the progress loop after initialization is done */
-            for (size_t p = min_part; p <= max_part; p++) {
-                req->partition_states[p] = MCA_PART_P2P_PARTITION_READY;
+            part_states = MCA_PART_P2P_PARTITION_READY;
+        }
+
+        for (size_t p = min_full; p < max_full; p++) {
+            req->partition_states[p] = part_states;
+        }
+
+        /* Partial completions occur only when using aggregation.
+         * Partition state needs to be updated atomically as other threads might contribute as well.
+         * The number of user partitions ready is negative, to differentiate them from the values
+         * of the partition state enum.
+         * MPI forbids 'MPI_Pready' to be called multiple times on the same partition, therefore it
+         * is safe to track only their count and not each user partition's state. */
+        if (0 < min_partial) {
+            int32_t total_ready = opal_atomic_add_fetch_32(&req->partition_states[min_full - 1], -min_partial);
+            int partition_size = min_full - 1 == req->meta.partition_count - 1 ?
+                mca_part_p2p_last_aggregated_partition_size(req) : req->aggregation_factor;
+            if (-total_ready == partition_size) {
+                if (MCA_PART_P2P_PARTITION_WAITING == part_states) {
+                    ompi_request_t* part_req = req->partition_requests[min_full - 1];
+                    err = part_req->req_start(1, &part_req);
+                    if (OMPI_SUCCESS != err) { return err; }
+                }
+                req->partition_states[min_full - 1] = part_states;
+            }
+        }
+        if (0 < max_partial) {
+            int32_t total_ready = opal_atomic_add_fetch_32(&req->partition_states[max_full], -max_partial);
+            int partition_size = max_full == req->meta.partition_count - 1 ?
+                mca_part_p2p_last_aggregated_partition_size(req) : req->aggregation_factor;
+            if (-total_ready == partition_size) {
+                if (MCA_PART_P2P_PARTITION_WAITING == part_states) {
+                    ompi_request_t* part_req = req->partition_requests[max_full];
+                    err = part_req->req_start(1, &part_req);
+                    if (OMPI_SUCCESS != err) { return err; }
+                }
+                req->partition_states[max_full] = part_states;
             }
         }
     }

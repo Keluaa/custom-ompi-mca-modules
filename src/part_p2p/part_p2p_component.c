@@ -31,7 +31,7 @@ mca_part_p2p_component_t mca_part_p2p_component = {
         .partm_finalize = mca_part_p2p_component_finalize,
     },
     .priority = 5,
-    .default_aggregation_factor = 1,
+    .default_min_partition_size = 0,
 };
 
 
@@ -46,10 +46,13 @@ static int mca_part_p2p_component_register(void)
         &mca_part_p2p_component.priority);
 
     mca_base_component_var_register(version,
-        "default_aggregation_factor", "Default aggregation factor of user partitions",
+        "default_min_partition_size",
+        "User partitions may be aggregated to reduce the amount of requests done and increase their payload size, "
+        "improving network usage. Partitions smaller than this threshold will be combined into a bigger one."
+        "This threshold is in kilobytes. A value of '0' disables automatic aggregation.",
         MCA_BASE_VAR_TYPE_INT, NULL, 0,
         MCA_BASE_VAR_FLAG_SETTABLE, OPAL_INFO_LVL_5, MCA_BASE_VAR_SCOPE_LOCAL,
-        &mca_part_p2p_component.default_aggregation_factor);
+        &mca_part_p2p_component.default_min_partition_size);
 
     return OPAL_SUCCESS;
 }

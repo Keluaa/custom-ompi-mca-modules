@@ -53,13 +53,15 @@ struct mca_part_p2p_request_t {
 
     /* Each of those arrays have 'meta.partition_count' elements */
     ompi_request_t** partition_requests;  /**< Persistent request for each partition */
-    volatile mca_part_p2p_partition_state_t* partition_states;  /**< State of each partition */
+    /** State of each partition: a 'mca_part_p2p_partition_state_t' value, or a negative value indicating
+     *  partial completion, in case multiple user partitions are aggregated. */
+    volatile int32_t* partition_states;
 
     size_t user_partition_count;  /**< Exact number of partitions given to MPI_Psend_init or MPI_Precv_init */
-    size_t partition_size;        /**< Number of elements per partition */
+    size_t partition_size;        /**< Number of elements per partition, not accounting for aggregation */
     ompi_datatype_t* datatype;    /**< Datatype of buffer elements */
     const void* user_data;        /**< Contiguous user buffer for the partitions */
-    int aggregation_factor;       /**< Ratio of 'user/real' partitions (sender side only) */
+    int aggregation_factor;       /**< Number of user partitions per real partitions (sender side only) */
 
     /* Data required for initialization */
     opal_atomic_int32_t init_state;  /**< A 'mca_part_p2p_init_state_t' value */
