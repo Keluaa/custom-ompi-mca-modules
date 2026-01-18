@@ -71,7 +71,7 @@ struct mca_part_p2p_request_t {
     ompi_request_t*     init_req;    /**< used to send 'meta' from MPI_Psend_init to MPI_Precv_init */
 };
 typedef struct mca_part_p2p_request_t mca_part_p2p_request_t;
-OBJ_CLASS_DECLARATION(mca_part_p2p_request_t);
+OMPI_DECLSPEC OBJ_CLASS_DECLARATION(mca_part_p2p_request_t);
 
 
 void mca_part_p2p_request_init(

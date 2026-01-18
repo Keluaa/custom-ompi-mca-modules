@@ -15,7 +15,7 @@ struct mca_part_p2p_request_list_item_t {
 };
 
 typedef struct mca_part_p2p_request_list_item_t mca_part_p2p_request_list_item_t;
-OPAL_DECLSPEC OBJ_CLASS_DECLARATION(mca_part_p2p_request_list_item_t);
+OMPI_DECLSPEC OBJ_CLASS_DECLARATION(mca_part_p2p_request_list_item_t);
 
 // TODO: GPU awareness???
 
