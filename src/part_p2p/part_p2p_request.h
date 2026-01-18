@@ -34,6 +34,9 @@ struct mca_part_p2p_request_meta_t {
     int first_part_tag;
     /** Number of partitions to send/recv */
     size_t partition_count;
+    /** Real size of each partition, accounting for aggregation.
+     *  With aggregation, the last partition can have fewer elements. */
+    size_t elements_per_partition;
 };
 typedef struct mca_part_p2p_request_meta_t mca_part_p2p_request_meta_t;
 

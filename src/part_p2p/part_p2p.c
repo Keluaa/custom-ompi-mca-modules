@@ -162,12 +162,8 @@ static int mca_part_p2p_complete_request_init(mca_part_p2p_request_t* request)
         return OMPI_ERR_OUT_OF_RESOURCE;
     }
 
-    // TODO:
-    //   total_elements     is sync (otherwise it is wrong)
-    //   elements_per_part  is missing 'aggregation factor' on the receive side
-
     size_t total_elements    = request->partition_size * request->user_partition_count;
-    size_t elements_per_part = request->partition_size * request->aggregation_factor;
+    size_t elements_per_part = request->meta.elements_per_partition;
 
     size_t bytes_per_part;
     err = ompi_datatype_type_size(request->datatype, &bytes_per_part);
@@ -415,6 +411,7 @@ static int mca_part_p2p_psend_init(
     /* It is the send side which dictates the number of partitions requests and their tags. */
     req->meta.first_part_tag = (int) first_part_tag;
     req->meta.partition_count = real_parts;
+    req->meta.elements_per_partition = count * req->aggregation_factor;
     err = MCA_PML_CALL(isend(
         &req->meta, sizeof(mca_part_p2p_request_meta_t), MPI_BYTE,
         dst, tag, MCA_PML_BASE_SEND_STANDARD, comm,
