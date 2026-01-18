@@ -1,5 +1,5 @@
-#ifndef OMPI_CART_PLUGIN_PART_P2P_H
-#define OMPI_CART_PLUGIN_PART_P2P_H
+#ifndef PART_P2P_H
+#define PART_P2P_H
 
 #include "ompi_config.h"
 #include "part_p2p_request.h"
@@ -43,4 +43,4 @@ void mca_part_p2p_dump_request_state(ompi_request_t* request, const char* label)
 
 END_C_DECLS
 
-#endif //OMPI_CART_PLUGIN_PART_P2P_H
+#endif //PART_P2P_H

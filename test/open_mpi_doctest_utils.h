@@ -1,5 +1,5 @@
-#ifndef OMPI_CART_PLUGIN_OPEN_MPI_DOCTEST_UTILS_H
-#define OMPI_CART_PLUGIN_OPEN_MPI_DOCTEST_UTILS_H
+#ifndef OPEN_MPI_DOCTEST_UTILS_H
+#define OPEN_MPI_DOCTEST_UTILS_H
 
 #include <vector>
 #include <doctest/extensions/doctest_mpi.h>
@@ -144,4 +144,4 @@ bool progress_until_condition_or_timeout(int seconds, Functor&& f)
     return true;
 }
 
-#endif //OMPI_CART_PLUGIN_OPEN_MPI_DOCTEST_UTILS_H
+#endif //OPEN_MPI_DOCTEST_UTILS_H

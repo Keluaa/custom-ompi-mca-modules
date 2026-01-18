@@ -1,5 +1,5 @@
-#ifndef OMPI_CART_PLUGIN_PART_P2P_REQUEST_H
-#define OMPI_CART_PLUGIN_PART_P2P_REQUEST_H
+#ifndef PART_P2P_REQUEST_H
+#define PART_P2P_REQUEST_H
 
 #include "ompi/datatype/ompi_datatype.h"
 #include "ompi/request/request.h"
@@ -85,4 +85,4 @@ void mca_part_p2p_request_free(mca_part_p2p_request_t* request);
 
 END_C_DECLS
 
-#endif //OMPI_CART_PLUGIN_PART_P2P_REQUEST_H
+#endif //PART_P2P_REQUEST_H

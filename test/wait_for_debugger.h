@@ -1,5 +1,5 @@
-#ifndef OMPI_CART_PLUGIN_WAIT_FOR_DEBUGGER_H
-#define OMPI_CART_PLUGIN_WAIT_FOR_DEBUGGER_H
+#ifndef WAIT_FOR_DEBUGGER_H
+#define WAIT_FOR_DEBUGGER_H
 
 #include <cstdio>
 #include <csignal>
@@ -23,4 +23,4 @@ inline void wait_for_debugger()
     raise(SIGSTOP);
 }
 
-#endif //OMPI_CART_PLUGIN_WAIT_FOR_DEBUGGER_H
+#endif //WAIT_FOR_DEBUGGER_H

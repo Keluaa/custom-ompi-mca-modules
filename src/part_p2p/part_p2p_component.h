@@ -1,5 +1,5 @@
-#ifndef OMPI_CART_PLUGIN_PART_P2P_COMPONENT_H
-#define OMPI_CART_PLUGIN_PART_P2P_COMPONENT_H
+#ifndef PART_P2P_COMPONENT_H
+#define PART_P2P_COMPONENT_H
 
 #include "ompi_config.h"
 #include "ompi/mca/part/base/base.h"
@@ -17,4 +17,4 @@ OMPI_DECLSPEC extern mca_part_p2p_component_t mca_part_p2p_component;
 
 END_C_DECLS
 
-#endif //OMPI_CART_PLUGIN_PART_P2P_COMPONENT_H
+#endif //PART_P2P_COMPONENT_H
